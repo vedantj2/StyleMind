@@ -3,6 +3,9 @@ import Navigation from './components/Navigation'
 import Home from './pages/Home'
 import Pricing from './pages/Pricing'
 import Playground from './pages/Playground'
+import Login from './pages/Login'
+import Dashboard from './pages/Dashboard'
+import Profile from './pages/Profile'
 import './App.css'
 
 function App() {
@@ -20,6 +23,9 @@ function App() {
               </main>
             </>
           } />
+          <Route path="/login" element={<Login />} />
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/dashboard/profile" element={<Profile />} />
         </Routes>
       </div>
     </Router>

@@ -3,9 +3,13 @@ import { LiquidButton } from '@/components/ui/button'
 import Navigation from '../components/Navigation'
 import Footer from '../components/Footer'
 import { FeaturesGrid } from '../components/FeaturesGrid'
+import { Testimonials } from '../components/ui/testimonials'
+import { useNavigate } from 'react-router-dom'
 import './Home.css'
 
 function Home() {
+  const navigate = useNavigate()
+
   return (
     <div className="home">
       <Navigation />
@@ -19,7 +23,11 @@ function Home() {
             AI powered wardrobe management system
           </p>
           <div className="flex justify-center mt-8">
-            <LiquidButton className="text-white border rounded-full" size={'xl'}>
+            <LiquidButton 
+              className="text-white border rounded-full" 
+              size={'xl'}
+              onClick={() => navigate('/login')}
+            >
               Let's Go
             </LiquidButton>
           </div>
@@ -30,16 +38,16 @@ function Home() {
 
       <div className="home-content">
         <section className="info-section">
-          <h2>How It Works</h2>
+          <h2>Our Mission</h2>
           <div className="steps-container">
             <div className="step">
               <div className="step-number">1</div>
               <div className="step-content">
-                <h3>Image Parsing</h3>
+                <h3>Wardrobe Management Chaos</h3>
                 <p>
-                  Upload an image containing a person wearing clothing. Our SCHP (Self-Correction for Human Parsing) 
-                  model analyzes the image and generates a detailed segmentation mask identifying different 
-                  clothing items and body parts.
+                  Many people struggle to organize and catalog their clothing items. We solve this by providing 
+                  AI-powered tools that automatically extract and catalog clothing from photos, making wardrobe 
+                  management effortless and digital.
                 </p>
               </div>
             </div>
@@ -47,11 +55,11 @@ function Home() {
             <div className="step">
               <div className="step-number">2</div>
               <div className="step-content">
-                <h3>Clothing Extraction</h3>
+                <h3>Online Shopping Uncertainty</h3>
                 <p>
-                  The system extracts individual clothing items from the original image using the parsing mask. 
-                  Each item (hat, shirt, pants, shoes, etc.) is isolated with a transparent background, 
-                  ready for further processing.
+                  Buying clothes online often leads to uncertainty about fit, style, and appearance. Our virtual 
+                  try-on technology helps users visualize how clothes will look on them before making a purchase, 
+                  reducing returns and increasing confidence in online shopping decisions.
                 </p>
               </div>
             </div>
@@ -59,11 +67,11 @@ function Home() {
             <div className="step">
               <div className="step-number">3</div>
               <div className="step-content">
-                <h3>Garment Cleaning</h3>
+                <h3>Outfit Planning Challenges</h3>
                 <p>
-                  OpenCV-based processing removes black backgrounds, crops tightly to the garment, and applies 
-                  morphological operations to clean up the extracted clothing items, ensuring optimal quality 
-                  for reconstruction.
+                  Creating stylish and appropriate outfits can be time-consuming and overwhelming. Our AI-powered 
+                  outfit recommendation system analyzes your wardrobe and suggests perfect combinations based on 
+                  your style preferences, occasions, and current trends.
                 </p>
               </div>
             </div>
@@ -71,50 +79,18 @@ function Home() {
             <div className="step">
               <div className="step-number">4</div>
               <div className="step-content">
-                <h3>AI Reconstruction</h3>
+                <h3>Sustainable Fashion Access</h3>
                 <p>
-                  Using OpenAI's advanced image models, each clothing item is reconstructed as a high-quality 
-                  ecommerce product image. The AI lays garments flat, removes wrinkles, preserves textures 
-                  and colors, and creates professional product photography with white backgrounds.
+                  Fast fashion contributes to environmental waste, while sustainable options are often hard to find 
+                  or expensive. Our thrift marketplace connects fashion enthusiasts, making it easy to buy and sell 
+                  pre-loved items, promoting a circular fashion economy and making sustainable fashion more accessible.
                 </p>
               </div>
             </div>
           </div>
         </section>
 
-        <section className="info-section">
-          <h2>Supported Clothing Items</h2>
-          <div className="items-grid">
-            <div className="item-card">Hat</div>
-            <div className="item-card">Gloves</div>
-            <div className="item-card">Sunglasses</div>
-            <div className="item-card">Upper Clothes</div>
-            <div className="item-card">Dress</div>
-            <div className="item-card">Coat</div>
-            <div className="item-card">Socks</div>
-            <div className="item-card">Pants</div>
-            <div className="item-card">Jumpsuits</div>
-            <div className="item-card">Scarf</div>
-            <div className="item-card">Left Shoe</div>
-            <div className="item-card">Right Shoe</div>
-          </div>
-        </section>
-
-        <section className="info-section">
-          <h2>API Endpoints</h2>
-          <div className="api-info">
-            <div className="api-endpoint">
-              <code className="method get">GET</code>
-              <code className="endpoint">/health</code>
-              <p>Check API health status</p>
-            </div>
-            <div className="api-endpoint">
-              <code className="method post">POST</code>
-              <code className="endpoint">/reconstruct</code>
-              <p>Upload image and get reconstructed clothing items</p>
-            </div>
-          </div>
-        </section>
+        <Testimonials />
       </div>
       <Footer />
     </div>

@@ -39,6 +39,12 @@ function Navigation({ className }: NavigationProps) {
           >
             Playground
           </Link>
+          <Link 
+            to="/login" 
+            className={`navbar-link ${location.pathname === '/login' ? 'active' : ''}`}
+          >
+            Login
+          </Link>
         </div>
       </div>
     </nav>
