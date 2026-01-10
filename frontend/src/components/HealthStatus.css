@@ -1,0 +1,43 @@
+.health-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem 1.5rem;
+  border-radius: 0;
+  margin-bottom: 0;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  max-width: 600px;
+  margin: 0 auto 2rem;
+  backdrop-filter: blur(10px);
+}
+
+.health-status.checking {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.health-status.healthy {
+  background: #ffffff;
+  border-color: #1a1a1a;
+}
+
+.health-status.unhealthy {
+  background: #ffffff;
+  border-color: #e5e5e5;
+}
+
+.health-indicator {
+  font-size: 1.25rem;
+}
+
+.health-text {
+  color: #1a1a1a;
+  font-size: 0.95rem;
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.health-text strong {
+  font-weight: 400;
+}

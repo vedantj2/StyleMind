@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Environment variables
+.env
+.env.local
+
+# Checkpoints and large model files
+checkpoints/
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pkl
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node modules (if any in root)
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
