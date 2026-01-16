@@ -22,7 +22,6 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from difflib import SequenceMatcher
 from typing import Dict, List, Optional
 
 import cv2
@@ -32,7 +31,13 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from PIL import Image
 from openai import OpenAI
-from serpapi import GoogleSearch
+import requests
+from pymongo import MongoClient
+from datetime import datetime, timezone
+import uuid
+import boto3
+from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError
 
 # Load environment variables
 load_dotenv()
@@ -40,6 +45,38 @@ load_dotenv()
 # Configuration
 MODEL_RESTORE = "checkpoints/exp-schp-201908261155-lip.pth"
 DATASET = "lip"
+
+# AWS Lambda URL for presigned URL generation
+LAMBDA_PRESIGNED_URL = "https://kjym4xf6sgvorxpst7dbbcf2ge0szprk.lambda-url.ap-south-1.on.aws/"
+
+# S3 Bucket configuration
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "wardrobe-managment-vj")
+S3_REGION = os.getenv("S3_REGION", "ap-south-1")
+
+# Initialize boto3 S3 client for generating presigned URLs
+try:
+    s3_client = boto3.client('s3', region_name=S3_REGION)
+    logging.info(f"✓ Initialized S3 client for region: {S3_REGION}")
+except Exception as e:
+    logging.warning(f"Failed to initialize S3 client: {e}. Presigned URL generation will fail.")
+    s3_client = None
+
+# MongoDB configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://vedantjain0210_db_user:B3uuEkqgw8hV8oWa@wardrobe.eamzexq.mongodb.net/")
+MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "TestDB")
+MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "Clothing")
+
+# Initialize MongoDB client
+try:
+    mongodb_client = MongoClient(MONGODB_URI)
+    mongodb_db = mongodb_client[MONGODB_DB_NAME]
+    mongodb_collection = mongodb_db[MONGODB_COLLECTION_NAME]
+    logging.info(f"✓ Connected to MongoDB: {MONGODB_DB_NAME}.{MONGODB_COLLECTION_NAME}")
+except Exception as e:
+    logging.warning(f"Failed to connect to MongoDB: {e}. MongoDB operations will fail.")
+    mongodb_client = None
+    mongodb_db = None
+    mongodb_collection = None
 
 # Clothing items to extract and reconstruct (LIP dataset indices)
 CLOTHING_ITEMS = {
@@ -447,7 +484,6 @@ def reconstruct_with_dalle3_fallback(image_path: Path, prompt: str) -> Path:
     )
     
     # Download image
-    import requests
     image_url = result.data[0].url
     image_response = requests.get(image_url)
     image_response.raise_for_status()
@@ -458,6 +494,199 @@ def reconstruct_with_dalle3_fallback(image_path: Path, prompt: str) -> Path:
     
     logging.info(f"✓ Reconstructed image saved (DALL-E 3): {output_path.name}")
     return output_path
+
+
+def get_presigned_url(filename: str, bucket_name: str = None, content_type: str = "image/png") -> dict:
+    """
+    Get presigned URL from Lambda function for S3 upload.
+    
+    Args:
+        filename: Name of the file to upload (object_name in S3)
+        bucket_name: Name of the S3 bucket (optional, uses S3_BUCKET_NAME if not provided)
+        content_type: MIME type of the file (default: image/png)
+    
+    Returns:
+        dict: Contains 'url' (POST URL) and 'fields' (form fields for POST request)
+    """
+    if not bucket_name:
+        bucket_name = S3_BUCKET_NAME
+    
+    if not bucket_name:
+        raise ValueError("S3 bucket name is required. Set S3_BUCKET_NAME environment variable or pass bucket_name parameter.")
+    
+    try:
+        # Lambda function expects bucket_name and object_name
+        # Include Content-Type in fields and conditions so S3 stores it correctly
+        payload = {
+            "bucket_name": bucket_name,
+            "object_name": filename,
+            "expiration": 3600,  # 1 hour expiration
+            "fields": {
+                "Content-Type": content_type,
+                "Content-Disposition": "inline"  # Make browser display instead of download
+            },
+            "conditions": [
+                ["starts-with", "$Content-Type", "image/"],
+                ["eq", "$Content-Disposition", "inline"]
+            ]
+        }
+        
+        response = requests.post(
+            LAMBDA_PRESIGNED_URL,
+            json=payload,
+            timeout=30
+        )
+        response.raise_for_status()
+        
+        # Lambda returns wrapped in statusCode/body structure
+        lambda_response = response.json()
+        
+        # Extract the body if it's a string (JSON string)
+        if isinstance(lambda_response.get("body"), str):
+            presigned_data = json.loads(lambda_response["body"])
+        else:
+            presigned_data = lambda_response.get("body", lambda_response)
+        
+        if not presigned_data or "url" not in presigned_data:
+            raise ValueError(f"Invalid response from Lambda: {presigned_data}")
+        
+        return presigned_data
+        
+    except Exception as e:
+        logging.error(f"Failed to get presigned URL: {e}")
+        raise RuntimeError(f"Failed to get presigned URL: {e}") from e
+
+
+def upload_to_s3(file_path: Path, filename: str, bucket_name: str = None) -> str:
+    """
+    Upload file to S3 using presigned POST URL from Lambda.
+    
+    Args:
+        file_path: Local path to the file
+        filename: Name for the file in S3 (object_name)
+        bucket_name: Name of the S3 bucket (optional, uses S3_BUCKET_NAME if not provided)
+    
+    Returns:
+        str: Final S3 URL of the uploaded file
+    """
+    try:
+        # Determine Content-Type from file extension
+        ext = Path(filename).suffix.lower()
+        content_type_map = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.webp': 'image/webp',
+            '.svg': 'image/svg+xml'
+        }
+        content_type = content_type_map.get(ext, 'image/png')
+        
+        # Get presigned POST URL from Lambda with Content-Type
+        presigned_data = get_presigned_url(filename, bucket_name, content_type)
+        post_url = presigned_data.get("url")
+        post_fields = presigned_data.get("fields", {})
+        
+        if not post_url:
+            raise ValueError("No url in Lambda presigned POST response")
+        
+        # For presigned POST, we need to send:
+        # 1. All the fields from presigned_data['fields'] as form data
+        # 2. The file itself as the last field (typically 'file')
+        # The presigned POST fields usually include: key, AWSAccessKeyId, policy, signature, Content-Type, Content-Disposition, etc.
+        
+        # Prepare multipart form data
+        form_data = post_fields.copy()
+        
+        # Upload using POST with multipart form data
+        # The file should be the last field in the form
+        # IMPORTANT: Include Content-Type in the files parameter so S3 stores it correctly
+        file_field_name = 'file'  # Default field name for file upload
+        
+        with open(file_path, "rb") as f:
+            # Include Content-Type in the file tuple - this is critical for S3 to store it correctly
+            files = {file_field_name: (filename, f, content_type)}
+            upload_response = requests.post(
+                post_url,
+                data=form_data,  # Include all presigned POST fields (including Content-Type and Content-Disposition)
+                files=files,     # Include the file with Content-Type (must be last)
+                timeout=60
+            )
+        
+        upload_response.raise_for_status()
+        
+        # Construct the S3 URL
+        if not bucket_name:
+            bucket_name = S3_BUCKET_NAME
+        
+        # Construct S3 URL
+        s3_region = S3_REGION
+        s3_url = f"https://{bucket_name}.s3.{s3_region}.amazonaws.com/{filename}"
+        
+        logging.info(f"✓ Uploaded to S3: {s3_url}")
+        return s3_url
+        
+    except Exception as e:
+        logging.error(f"Failed to upload to S3: {e}")
+        raise RuntimeError(f"Failed to upload to S3: {e}") from e
+
+
+def generate_presigned_get_url(bucket_name: str, object_name: str, expiration: int = 604800) -> str:
+    """
+    Generate a presigned URL for viewing/downloading an S3 object.
+    
+    Args:
+        bucket_name: Name of the S3 bucket
+        object_name: Name of the object in S3
+        expiration: Time in seconds for the presigned URL to remain valid (default: 7 days)
+    
+    Returns:
+        str: Presigned URL for accessing the object
+    """
+    if s3_client is None:
+        raise RuntimeError("S3 client not initialized. Check AWS credentials.")
+    
+    try:
+        response = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': bucket_name, 'Key': object_name},
+            ExpiresIn=expiration
+        )
+        return response
+    except ClientError as e:
+        logging.error(f"Failed to generate presigned URL: {e}")
+        raise RuntimeError(f"Failed to generate presigned URL: {e}") from e
+
+
+def store_tags_in_mongodb(s3_url: str, tags: dict) -> str:
+    """
+    Store tags in MongoDB with S3 URL.
+    
+    Args:
+        s3_url: S3 URL of the image
+        tags: Tags dictionary to store
+    
+    Returns:
+        str: MongoDB document _id
+    """
+    if mongodb_collection is None:
+        raise RuntimeError("MongoDB not connected")
+    
+    try:
+        document = {
+            "_id": str(uuid.uuid4()),
+            "url": s3_url,
+            "tags": tags,
+            "created_at": datetime.now(timezone.utc)
+        }
+        
+        result = mongodb_collection.insert_one(document)
+        logging.info(f"✓ Stored tags in MongoDB: {result.inserted_id}")
+        return str(result.inserted_id)
+        
+    except Exception as e:
+        logging.error(f"Failed to store tags in MongoDB: {e}")
+        raise RuntimeError(f"Failed to store tags in MongoDB: {e}") from e
 
 
 def generate_garment_tags(image_path: str) -> dict:
@@ -520,22 +749,22 @@ def generate_garment_tags(image_path: str) -> dict:
         mime_type = "image/png"  # Default
     
     # Strict JSON prompt for garment tagging
-    prompt = """Analyze ONLY the garment in this image (ignore background, mannequin, or any non-garment elements).
+    prompt = """Analyze the clothing item or accessory in this image (this includes ALL types of garments: shirts, pants, shoes, hats, gloves, sunglasses, socks, scarves, dresses, coats, jumpsuits, and any other clothing items or fashion accessories).
 
 Return STRICT JSON only. No markdown, no explanations, no code blocks. Just valid JSON.
 
 The JSON must have exactly this structure:
 {
-  "garment_type": "string (e.g., T-Shirt, Dress, Pants, Jacket)",
-  "sub_category": "string (e.g., T-Shirt -> Crew Neck, V-Neck, Henley)",
+  "garment_type": "string (e.g., T-Shirt, Dress, Pants, Jacket, Shoe, Hat, Glove, Sunglasses, Sock, Scarf, etc.)",
+  "sub_category": "string (e.g., T-Shirt -> Crew Neck, V-Neck, Henley; Shoe -> Sneakers, Boots, Loafers; Hat -> Baseball Cap, Beanie, etc.)",
   "primary_color": "string (e.g., navy blue, white, black)",
   "secondary_colors": ["string array of additional colors if any"],
-  "fabric": "string (best guess: cotton, polyester, denim, silk, wool, etc.)",
-  "texture": "string (best guess: smooth, ribbed, textured, knit, etc.)",
+  "fabric": "string (best guess: cotton, polyester, denim, silk, wool, leather, canvas, rubber, etc. - use 'N/A' for items where fabric doesn't apply like shoes)",
+  "texture": "string (best guess: smooth, ribbed, textured, knit, etc. - use 'N/A' if not applicable)",
   "pattern": "string (solid, striped, floral, geometric, plaid, etc. or 'none' if solid)",
-  "sleeve_type": "string (long sleeve, short sleeve, sleeveless, cap sleeve, etc.)",
-  "fit": "string (slim, regular, loose, oversized, fitted, etc.)",
-  "style": "string (casual, formal, sporty, vintage, modern, etc.)",
+  "sleeve_type": "string (long sleeve, short sleeve, sleeveless, cap sleeve, etc. - use 'N/A' if not applicable like for shoes, pants, etc.)",
+  "fit": "string (slim, regular, loose, oversized, fitted, etc. - use 'N/A' if not applicable)",
+  "style": "string (casual, formal, sporty, vintage, modern, athletic, etc.)",
   "season": "string (spring, summer, fall, winter, all-season)",
   "gender": "men" | "women" | "unisex",
   "keywords": ["array of relevant descriptive keywords"]
@@ -543,10 +772,12 @@ The JSON must have exactly this structure:
 
 Important:
 - Return ONLY the JSON object, nothing else
-- All string values must be non-empty
+- All string values must be non-empty (use 'N/A' for fields that don't apply to the item type)
 - secondary_colors and keywords can be empty arrays [] if none apply
 - Use best-guess inference for fabric and texture if uncertain
-- Analyze only the garment, not background or other elements"""
+- For shoes, accessories, and other non-fabric items, set fabric to 'N/A' and use appropriate material terms
+- For items without sleeves (shoes, pants, hats, etc.), set sleeve_type to 'N/A'
+- Analyze only the clothing item or accessory, not background or other elements"""
 
     try:
         logging.info(f"Generating tags for: {image_path_obj.name}")
@@ -639,290 +870,6 @@ Important:
     except Exception as e:
         logging.error(f"OpenAI API call failed: {e}")
         raise RuntimeError(f"Failed to generate garment tags: {e}") from e
-
-
-def find_similar_products(garment_image_path: str, garment_tags: dict) -> dict:
-    """
-    Find visually and semantically similar clothing products online.
-    
-    Uses GPT-4o to generate an optimized search query from garment tags,
-    then searches for similar products using SerpAPI, ranks them by similarity,
-    and returns structured product information with prices.
-    
-    Args:
-        garment_image_path: Path to the reconstructed garment image (for future image similarity)
-        garment_tags: Dictionary containing garment metadata from generate_garment_tags()
-            Expected keys: garment_type, sub_category, primary_color, fabric, style, etc.
-    
-    Returns:
-        dict: Structured product discovery results:
-            {
-                "query_used": string,
-                "results": [
-                    {
-                        "title": string,
-                        "price": number,
-                        "currency": string,
-                        "store": string,
-                        "url": string,
-                        "image": string,
-                        "similarity_score": number (0-1)
-                    }
-                ]
-            }
-    
-    Raises:
-        ValueError: If garment_tags is invalid or missing required fields
-        RuntimeError: If API calls fail or no results found
-    
-    Example:
-        >>> tags = {
-        ...     "garment_type": "T-Shirt",
-        ...     "sub_category": "Crew Neck",
-        ...     "primary_color": "navy blue",
-        ...     "fabric": "cotton",
-        ...     "style": "casual"
-        ... }
-        >>> results = find_similar_products("reconstructed_tshirt.png", tags)
-        >>> print(json.dumps(results, indent=2))
-    """
-    # Validate garment_tags
-    required_fields = ["garment_type", "primary_color"]
-    missing_fields = [field for field in required_fields if field not in garment_tags]
-    if missing_fields:
-        raise ValueError(f"Missing required fields in garment_tags: {missing_fields}")
-    
-    # Validate API keys
-    serpapi_key = os.getenv("SERPAPI_API_KEY")
-    if not serpapi_key:
-        raise RuntimeError("SERPAPI_API_KEY not set in environment")
-    
-    if not os.getenv("OPENAI_API_KEY"):
-        raise RuntimeError("OPENAI_API_KEY not set in environment")
-    
-    try:
-        # Step 1: Generate optimized search query from tags using GPT-4o
-        logging.info("Generating search query from garment tags...")
-        
-        query_prompt = f"""Generate a concise, effective Google Shopping search query for finding similar products to this garment.
-
-Garment Details:
-- Type: {garment_tags.get('garment_type', 'N/A')}
-- Sub Category: {garment_tags.get('sub_category', 'N/A')}
-- Primary Color: {garment_tags.get('primary_color', 'N/A')}
-- Secondary Colors: {', '.join(garment_tags.get('secondary_colors', [])) if garment_tags.get('secondary_colors') else 'None'}
-- Fabric: {garment_tags.get('fabric', 'N/A')}
-- Style: {garment_tags.get('style', 'N/A')}
-- Pattern: {garment_tags.get('pattern', 'N/A')}
-- Gender: {garment_tags.get('gender', 'N/A')}
-- Keywords: {', '.join(garment_tags.get('keywords', [])) if garment_tags.get('keywords') else 'None'}
-
-Requirements:
-- Return ONLY the search query text, nothing else
-- Keep it concise (5-10 words max)
-- Focus on the most distinctive features (type, color, style)
-- Use natural language that shoppers would use
-- Do NOT include price ranges or brand names
-- Example format: "navy blue cotton crew neck t-shirt"
-
-Search Query:"""
-        
-        query_response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {
-                    "role": "user",
-                    "content": query_prompt
-                }
-            ],
-            max_tokens=50,
-            temperature=0.3
-        )
-        
-        search_query = query_response.choices[0].message.content.strip()
-        # Clean up any quotes or extra formatting
-        search_query = search_query.strip('"').strip("'").strip()
-        logging.info(f"Generated search query: {search_query}")
-        
-        # Step 2: Search for products using SerpAPI
-        logging.info("Searching for similar products...")
-        
-        params = {
-            "engine": "google_shopping",
-            "q": search_query,
-            "api_key": serpapi_key,
-            "num": 20,  # Get more results to filter and rank
-            "tbs": "vw:g"  # Google Shopping filter
-        }
-        
-        search = GoogleSearch(params)
-        results = search.get_dict()
-        
-        # Extract shopping results
-        shopping_results = results.get("shopping_results", [])
-        if not shopping_results:
-            logging.warning("No shopping results found")
-            return {
-                "query_used": search_query,
-                "results": []
-            }
-        
-        # Step 3: Process and rank results
-        processed_results = []
-        seen_stores = set()
-        
-        for item in shopping_results:
-            # Skip if we've already seen this store (remove duplicates)
-            store = item.get("source", "").lower()
-            if store in seen_stores:
-                continue
-            
-            # Extract product information
-            title = item.get("title", "")
-            price_str = item.get("price", "")
-            url = item.get("link", "")
-            image = item.get("thumbnail", "")
-            source = item.get("source", "")
-            
-            # Parse price
-            price = None
-            currency = "USD"
-            if price_str:
-                # Extract numeric value and currency
-                import re
-                price_match = re.search(r'([\d,]+\.?\d*)', price_str.replace(',', ''))
-                if price_match:
-                    try:
-                        price = float(price_match.group(1))
-                    except ValueError:
-                        pass
-                
-                # Detect currency
-                if '$' in price_str or 'USD' in price_str.upper():
-                    currency = "USD"
-                elif '€' in price_str or 'EUR' in price_str.upper():
-                    currency = "EUR"
-                elif '£' in price_str or 'GBP' in price_str.upper():
-                    currency = "GBP"
-            
-            # Skip if essential data is missing
-            if not title or not url:
-                continue
-            
-            # Compute similarity score
-            similarity_score = _compute_similarity_score(garment_tags, title)
-            
-            processed_results.append({
-                "title": title,
-                "price": price,
-                "currency": currency,
-                "store": source,
-                "url": url,
-                "image": image,
-                "similarity_score": round(similarity_score, 3)
-            })
-            
-            seen_stores.add(store)
-        
-        # Step 4: Sort by similarity score (descending) and limit to top 10
-        processed_results.sort(key=lambda x: x["similarity_score"], reverse=True)
-        top_results = processed_results[:10]
-        
-        logging.info(f"Found {len(top_results)} similar products")
-        
-        return {
-            "query_used": search_query,
-            "results": top_results
-        }
-        
-    except Exception as e:
-        logging.error(f"Failed to find similar products: {e}")
-        raise RuntimeError(f"Failed to find similar products: {e}") from e
-
-
-def _compute_similarity_score(garment_tags: dict, product_title: str) -> float:
-    """
-    Compute similarity score between garment tags and product title.
-    
-    Uses text similarity metrics to compare key attributes.
-    
-    Args:
-        garment_tags: Dictionary of garment metadata
-        product_title: Product title from search results
-    
-    Returns:
-        float: Similarity score between 0 and 1
-    """
-    if not product_title:
-        return 0.0
-    
-    title_lower = product_title.lower()
-    score = 0.0
-    max_score = 0.0
-    
-    # Check garment type (highest weight)
-    garment_type = garment_tags.get("garment_type", "").lower()
-    if garment_type:
-        max_score += 0.3
-        if garment_type in title_lower:
-            score += 0.3
-        else:
-            # Partial match using sequence matcher
-            similarity = SequenceMatcher(None, garment_type, title_lower).ratio()
-            score += similarity * 0.3
-    
-    # Check sub category
-    sub_category = garment_tags.get("sub_category", "").lower()
-    if sub_category:
-        max_score += 0.2
-        if sub_category in title_lower:
-            score += 0.2
-        else:
-            similarity = SequenceMatcher(None, sub_category, title_lower).ratio()
-            score += similarity * 0.2
-    
-    # Check primary color
-    primary_color = garment_tags.get("primary_color", "").lower()
-    if primary_color:
-        max_score += 0.2
-        # Split color into words (e.g., "navy blue" -> ["navy", "blue"])
-        color_words = primary_color.split()
-        for word in color_words:
-            if word in title_lower:
-                score += 0.2 / len(color_words)
-                break
-        else:
-            # Partial match
-            similarity = SequenceMatcher(None, primary_color, title_lower).ratio()
-            score += similarity * 0.2
-    
-    # Check fabric
-    fabric = garment_tags.get("fabric", "").lower()
-    if fabric:
-        max_score += 0.15
-        if fabric in title_lower:
-            score += 0.15
-        else:
-            similarity = SequenceMatcher(None, fabric, title_lower).ratio()
-            score += similarity * 0.15
-    
-    # Check style
-    style = garment_tags.get("style", "").lower()
-    if style:
-        max_score += 0.15
-        if style in title_lower:
-            score += 0.15
-        else:
-            similarity = SequenceMatcher(None, style, title_lower).ratio()
-            score += similarity * 0.15
-    
-    # Normalize score to 0-1 range
-    if max_score > 0:
-        normalized_score = score / max_score
-    else:
-        normalized_score = 0.0
-    
-    return min(normalized_score, 1.0)
 
 
 @app.route("/health", methods=["GET"])
@@ -1090,10 +1037,30 @@ def reconstruct():
                         logging.warning(f"Failed to generate tags for {item_name}: {tag_error}")
                         # Continue without tags if tagging fails
                     
+                    # Stage 5: Upload to S3
+                    s3_url = None
+                    mongodb_id = None
+                    try:
+                        # Generate unique filename
+                        unique_filename = f"{uuid.uuid4()}_{item_name}_{reconstructed_path.name}"
+                        logging.info(f"Uploading {item_name} to S3...")
+                        s3_url = upload_to_s3(reconstructed_path, unique_filename)
+                        logging.info(f"✓ Uploaded {item_name} to S3: {s3_url}")
+                        
+                        # Store tags in MongoDB if available
+                        if tags:
+                            mongodb_id = store_tags_in_mongodb(s3_url, tags)
+                            logging.info(f"✓ Stored tags in MongoDB: {mongodb_id}")
+                    except Exception as upload_error:
+                        logging.error(f"Failed to upload {item_name} to S3 or store in MongoDB: {upload_error}")
+                        # Continue without S3 URL if upload fails
+                    
                     reconstructed_images.append({
                         "name": item_name,
                         "path": reconstructed_path,
-                        "tags": tags
+                        "tags": tags,
+                        "s3_url": s3_url,
+                        "mongodb_id": mongodb_id
                     })
                     logging.info(f"✓ Reconstructed: {item_name}")
                 except Exception as e:
@@ -1103,40 +1070,24 @@ def reconstruct():
             if not reconstructed_images:
                 return jsonify({"error": "Failed to reconstruct any clothing items"}), 500
             
-            # Convert images to base64 for JSON response
-            # Original image - determine MIME type from extension
-            mime_type = "image/png"
-            if ext.lower() in ['.jpg', '.jpeg']:
-                mime_type = "image/jpeg"
-            elif ext.lower() == '.gif':
-                mime_type = "image/gif"
-            
-            with open(input_path, "rb") as f:
-                original_image_b64 = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Mask image
-            with open(mask_path, "rb") as f:
-                mask_image_b64 = base64.b64encode(f.read()).decode('utf-8')
-            
-            # Reconstructed images with tags
+            # Build response with S3 URLs (only for reconstructed images)
             reconstructed_data = []
             for img_info in reconstructed_images:
-                with open(img_info["path"], "rb") as f:
-                    img_b64 = base64.b64encode(f.read()).decode('utf-8')
-                    item_data = {
-                        "name": img_info["name"],
-                        "image": f"data:image/png;base64,{img_b64}"
-                    }
-                    # Include tags if available
-                    if img_info.get("tags"):
-                        item_data["tags"] = img_info["tags"]
-                    reconstructed_data.append(item_data)
+                item_data = {
+                    "name": img_info["name"],
+                    "s3_url": img_info.get("s3_url"),
+                    "mongodb_id": img_info.get("mongodb_id")
+                }
+                # Include tags if available
+                if img_info.get("tags"):
+                    item_data["tags"] = img_info["tags"]
+                reconstructed_data.append(item_data)
             
-            logging.info(f"✓ Pipeline complete - returning {len(reconstructed_images)} reconstructed images")
+            logging.info(f"✓ Pipeline complete - processed {len(reconstructed_images)} reconstructed images")
             
             return jsonify({
-                "originalImage": f"data:{mime_type};base64,{original_image_b64}",
-                "maskImage": f"data:image/png;base64,{mask_image_b64}",
+                "success": True,
+                "message": f"Successfully processed {len(reconstructed_images)} clothing items",
                 "reconstructedImages": reconstructed_data
             })
     
@@ -1219,65 +1170,6 @@ def tag_garment():
         return jsonify({"error": f"API error: {str(e)}"}), 500
     except Exception as e:
         logging.error(f"Tagging Error: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/find-similar-products", methods=["POST"])
-def find_similar_products_endpoint():
-    """
-    Endpoint: Find similar products for a reconstructed garment.
-    
-    Request:
-        - JSON with 'image_path' (optional) and 'tags' (required):
-          {
-            "image_path": "path/to/reconstructed_image.png",  // optional
-            "tags": {
-              "garment_type": "T-Shirt",
-              "sub_category": "Crew Neck",
-              ...
-            }
-          }
-    
-    Response:
-        - JSON with similar products:
-          {
-            "query_used": string,
-            "results": [...]
-          }
-    """
-    if not request.is_json:
-        return jsonify({"error": "Request must be JSON"}), 400
-    
-    data = request.json
-    
-    # Validate tags
-    if "tags" not in data:
-        return jsonify({"error": "Missing 'tags' field in request"}), 400
-    
-    tags = data["tags"]
-    image_path = data.get("image_path", "")
-    
-    # Validate API keys
-    if not os.getenv("SERPAPI_API_KEY"):
-        return jsonify({"error": "SERPAPI_API_KEY not set in environment"}), 500
-    
-    if not os.getenv("OPENAI_API_KEY"):
-        return jsonify({"error": "OPENAI_API_KEY not set in environment"}), 500
-    
-    try:
-        # If image_path is provided, verify it exists
-        if image_path and not Path(image_path).exists():
-            return jsonify({"error": f"Image not found: {image_path}"}), 404
-        
-        results = find_similar_products(image_path or "", tags)
-        return jsonify(results)
-    
-    except ValueError as e:
-        return jsonify({"error": f"Validation error: {str(e)}"}), 400
-    except RuntimeError as e:
-        return jsonify({"error": f"API error: {str(e)}"}), 500
-    except Exception as e:
-        logging.error(f"Similar products error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
