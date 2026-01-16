@@ -10,13 +10,14 @@ const demoPlans = [
     yearlyPrice: "40",
     period: "per month",
     features: [
-      "Up to 10 projects",
-      "Basic analytics",
-      "48-hour support response time",
-      "Limited API access",
-      "Community support",
+      "Up to 50 wardrobe items",
+      "Clothing extraction & tagging",
+      "Basic outfit recommendations",
+      "Mobile app access",
+      "Email support",
+      "Standard wardrobe analytics",
     ],
-    description: "Perfect for individuals and small projects",
+    description: "Perfect for personal wardrobe management",
     buttonText: "Start Free Trial",
     href: "/sign-up",
     isPopular: false,
@@ -27,15 +28,16 @@ const demoPlans = [
     yearlyPrice: "79",
     period: "per month",
     features: [
-      "Unlimited projects",
-      "Advanced analytics",
-      "24-hour support response time",
-      "Full API access",
+      "Unlimited wardrobe items",
+      "Advanced clothing extraction",
+      "AI-powered outfit recommendations",
+      "Virtual try-on preview",
       "Priority support",
-      "Team collaboration",
-      "Custom integrations",
+      "Advanced analytics & insights",
+      "Outfit planning calendar",
+      "Style trend tracking",
     ],
-    description: "Ideal for growing teams and businesses",
+    description: "Ideal for fashion enthusiasts and stylists",
     buttonText: "Get Started",
     href: "/sign-up",
     isPopular: true,
@@ -47,15 +49,15 @@ const demoPlans = [
     period: "per month",
     features: [
       "Everything in Professional",
-      "Custom solutions",
+      "Custom AI model training",
       "Dedicated account manager",
-      "1-hour support response time",
-      "SSO Authentication",
-      "Advanced security",
-      "Custom contracts",
-      "SLA agreement",
+      "1-hour support response",
+      "API access for integrations",
+      "Team collaboration tools",
+      "Custom wardrobe solutions",
+      "SLA guarantee",
     ],
-    description: "For large organizations with specific needs",
+    description: "For fashion brands and retail businesses",
     buttonText: "Contact Sales",
     href: "/contact",
     isPopular: false,
@@ -69,8 +71,8 @@ function PricingPage() {
       <main className="pricing-main">
         <Pricing 
           plans={demoPlans}
-          title="Simple, Transparent Pricing"
-          description="Choose the plan that works for you\nAll plans include access to our platform, lead generation tools, and dedicated support."
+          title="StyleMind Pricing"
+          description="Choose the perfect plan for your wardrobe management needs. All plans include AI-powered clothing extraction, tagging, and our comprehensive wardrobe management platform."
         />
       </main>
       <Footer />

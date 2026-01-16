@@ -91,7 +91,6 @@ function ImageUpload({ onUpload, loading, disabled }: ImageUploadProps) {
           </div>
         ) : (
           <div className="upload-placeholder">
-            <div className="upload-icon">📤</div>
             <p className="upload-text">Drag & drop an image here</p>
             <p className="upload-subtext">or click to browse</p>
             <p className="upload-hint">Supports: JPG, PNG, GIF</p>

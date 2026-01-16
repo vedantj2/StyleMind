@@ -9,12 +9,15 @@
   border-bottom: none;
   mask-image: linear-gradient(to bottom, black 0%, black 80%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, black 0%, black 80%, transparent 100%);
+  overflow: visible;
 }
 
 .navbar.navbar-not-sticky {
   position: relative;
   mask-image: none;
   -webkit-mask-image: none;
+  background: rgba(0, 0, 0, 1);
+  backdrop-filter: none;
 }
 
 .navbar.overlay {
@@ -31,6 +34,7 @@
   align-items: center;
   height: 80px;
   overflow: visible;
+  position: relative;
 }
 
 .navbar-logo {
@@ -77,6 +81,8 @@
   display: flex;
   gap: 3rem;
   align-items: center;
+  position: relative;
+  z-index: 10001;
 }
 
 .navbar-link {
@@ -116,6 +122,100 @@
   background: #ffffff;
 }
 
+/* Dropdown Styles */
+.navbar-dropdown {
+  position: relative;
+  z-index: 10001;
+}
+
+.navbar-dropdown-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.dropdown-icon {
+  width: 16px;
+  height: 16px;
+  transition: transform 0.3s ease;
+  opacity: 0.7;
+}
+
+.dropdown-icon.open {
+  transform: rotate(180deg);
+}
+
+.navbar-dropdown-menu {
+  position: fixed;
+  background: #000000;
+  border: 1px solid #333333;
+  min-width: 240px;
+  z-index: 10002;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.875rem 1.25rem;
+  background: none;
+  border: none;
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 400;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  letter-spacing: -0.01em;
+  border-bottom: 1px solid #333333;
+}
+
+.dropdown-item:last-child {
+  border-bottom: none;
+}
+
+.dropdown-item.available:hover {
+  background: #1a1a1a;
+  color: #ffffff;
+}
+
+.dropdown-item.coming-soon {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dropdown-item.coming-soon:hover {
+  background: transparent;
+}
+
+.dropdown-item-icon {
+  display: flex;
+  align-items: center;
+  color: #ffffff;
+  opacity: 0.8;
+}
+
+.dropdown-item-text {
+  flex: 1;
+}
+
+.dropdown-item-badge {
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.5);
+  font-weight: 400;
+  padding: 0.25rem 0.5rem;
+  background: #1a1a1a;
+  border: 1px solid #333333;
+  border-radius: 2px;
+}
+
 @media (max-width: 768px) {
   .navbar-container {
     padding: 1rem 1.5rem;
@@ -126,6 +226,18 @@
   }
 
   .navbar-link {
+    font-size: 0.9rem;
+  }
+
+  .navbar-dropdown-menu {
+    left: auto;
+    right: 0;
+    transform: none;
+    min-width: 220px;
+  }
+
+  .dropdown-item {
+    padding: 0.75rem 1rem;
     font-size: 0.9rem;
   }
 }
