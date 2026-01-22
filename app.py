@@ -94,6 +94,196 @@ CLOTHING_ITEMS = {
     "Right-shoe": 19,
 }
 
+# ---------------------------
+# Controlled vocabularies for normalization/enrichment
+# ---------------------------
+GARMENT_ROLE_ENUM = {"top", "bottom", "footwear", "outerwear", "accessory"}
+SEASON_ENUM = {"spring", "summer", "fall", "autumn", "winter", "all-season"}
+COLOR_TEMPERATURE_ENUM = {"warm", "cool", "neutral"}
+
+# garment_type -> garment_role
+GARMENT_ROLE_MAP = {
+    "t-shirt": "top",
+    "shirt": "top",
+    "blouse": "top",
+    "polo": "top",
+    "tank": "top",
+    "sweater": "top",
+    "hoodie": "top",
+    "dress": "top",
+    "jacket": "outerwear",
+    "coat": "outerwear",
+    "scarf": "accessory",
+    "gloves": "accessory",
+    "hat": "accessory",
+    "cap": "accessory",
+    "beanie": "accessory",
+    "belt": "accessory",
+    "bag": "accessory",
+    "skirt": "bottom",
+    "jeans": "bottom",
+    "pants": "bottom",
+    "trousers": "bottom",
+    "shorts": "bottom",
+    "joggers": "bottom",
+    "sweatpants": "bottom",
+    "leggings": "bottom",
+    "socks": "accessory",
+    "shoes": "footwear",
+    "boots": "footwear",
+    "sneakers": "footwear",
+    "sandals": "footwear",
+    "flip-flops": "footwear",
+}
+
+# style -> formality
+STYLE_TO_FORMALITY = {
+    "casual": "casual",
+    "sporty": "athletic",
+    "athleisure": "athletic",
+    "streetwear": "casual",
+    "vintage": "casual",
+    "minimal": "casual",
+    "business": "business-casual",
+    "formal": "formal",
+    "business-formal": "business-formal",
+    "smart-casual": "smart-casual",
+    "business-casual": "business-casual",
+}
+
+# color keyword -> (family, temperature)
+COLOR_MAP = {
+    # neutrals
+    "black": ("black", "neutral"),
+    "white": ("white", "neutral"),
+    "gray": ("gray", "neutral"),
+    "grey": ("gray", "neutral"),
+    "charcoal": ("gray", "neutral"),
+    "silver": ("gray", "neutral"),
+    "brown": ("brown", "warm"),
+    "beige": ("beige", "warm"),
+    "tan": ("beige", "warm"),
+    "cream": ("beige", "warm"),
+    # warm
+    "red": ("red", "warm"),
+    "maroon": ("maroon", "warm"),
+    "burgundy": ("maroon", "warm"),
+    "orange": ("orange", "warm"),
+    "yellow": ("yellow", "warm"),
+    "gold": ("yellow", "warm"),
+    "pink": ("pink", "warm"),
+    # cool
+    "green": ("green", "cool"),
+    "olive": ("green", "cool"),
+    "teal": ("teal", "cool"),
+    "cyan": ("cyan", "cool"),
+    "blue": ("blue", "cool"),
+    "navy": ("navy", "cool"),
+    "purple": ("purple", "cool"),
+    "violet": ("purple", "cool"),
+    "magenta": ("magenta", "cool"),
+}
+
+
+def _norm(val: str) -> str:
+    return (val or "").strip().lower()
+
+
+def map_garment_role(garment_type: str) -> str:
+    return GARMENT_ROLE_MAP.get(_norm(garment_type))
+
+
+def map_formality(style: str) -> str:
+    return STYLE_TO_FORMALITY.get(_norm(style), "casual")
+
+
+def map_color(primary_color: str):
+    pc = _norm(primary_color)
+    if pc in COLOR_MAP:
+        return COLOR_MAP[pc]
+    for key, val in COLOR_MAP.items():
+        if key in pc:
+            return val
+    return ("unknown", "neutral")
+
+
+def normalize_season(season_value):
+    if isinstance(season_value, list):
+        seasons = season_value
+    elif isinstance(season_value, str):
+        seasons = [season_value]
+    else:
+        seasons = []
+
+    normalized = []
+    for s in seasons:
+        s_norm = _norm(s)
+        if s_norm == "autumn":
+            s_norm = "fall"
+        if s_norm in SEASON_ENUM and s_norm not in normalized:
+            normalized.append(s_norm)
+    if not normalized:
+        normalized = ["all-season"]
+    return normalized
+
+
+def layering_flags(garment_type: str, sleeve_type: str):
+    gt = _norm(garment_type)
+    sleeve = _norm(sleeve_type)
+
+    is_base = False
+    is_mid = False
+    is_outer = False
+
+    if gt in {"jacket", "coat"}:
+        is_outer = True
+    elif gt in {"t-shirt", "shirt", "blouse", "polo", "tank", "sweater", "hoodie", "dress"}:
+        is_base = True
+        if "long" in sleeve or "full" in sleeve:
+            is_mid = True
+
+    return {
+        "is_base_layer": is_base,
+        "is_mid_layer": is_mid,
+        "is_outer_layer": is_outer,
+    }
+
+
+def enrich_tags(tags: dict) -> dict:
+    """
+    Add normalized/derived fields without overwriting existing ones.
+    Idempotent and deterministic.
+    """
+    if not isinstance(tags, dict):
+        return tags
+
+    # 1) garment_role
+    if "garment_role" not in tags:
+        role = map_garment_role(tags.get("garment_type"))
+        if role:
+            tags["garment_role"] = role
+
+    # 2) season array
+    if "season_array" not in tags:
+        tags["season_array"] = normalize_season(tags.get("season"))
+
+    # 3) color normalization
+    fam, temp = map_color(tags.get("primary_color"))
+    if "color_family" not in tags:
+        tags["color_family"] = fam
+    if "color_temperature" not in tags:
+        tags["color_temperature"] = temp
+
+    # 4) formality
+    if "formality" not in tags:
+        tags["formality"] = map_formality(tags.get("style"))
+
+    # 5) layering
+    if "layering" not in tags:
+        tags["layering"] = layering_flags(tags.get("garment_type"), tags.get("sleeve_type"))
+
+    return tags
+
 # Logging setup
 logging.basicConfig(
     level=logging.INFO,
@@ -859,7 +1049,10 @@ Important:
             tags["secondary_colors"] = []
         if not isinstance(tags["keywords"], list):
             tags["keywords"] = []
-        
+
+        # Enrich/normalize without overwriting existing fields
+        tags = enrich_tags(tags)
+
         logging.info(f"✓ Successfully generated tags for {image_path_obj.name}")
         return tags
         

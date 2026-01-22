@@ -93,8 +93,14 @@ def main():
 
     gpus = [int(i) for i in args.gpu.split(',')]
     assert len(gpus) == 1
-    if not args.gpu == 'None':
+
+    use_cuda = torch.cuda.is_available() and args.gpu != 'None'
+    if use_cuda:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+        print("CUDA not available; running on CPU.")
 
     num_classes = dataset_settings[args.dataset]['num_classes']
     input_size = dataset_settings[args.dataset]['input_size']
@@ -103,14 +109,14 @@ def main():
 
     model = networks.init_model('resnet101', num_classes=num_classes, pretrained=None)
 
-    state_dict = torch.load(args.model_restore)['state_dict']
+    state_dict = torch.load(args.model_restore, map_location=device)['state_dict']
     from collections import OrderedDict
     new_state_dict = OrderedDict()
     for k, v in state_dict.items():
         name = k[7:]  # remove `module.`
         new_state_dict[name] = v
     model.load_state_dict(new_state_dict)
-    model.cuda()
+    model.to(device)
     model.eval()
 
     transform = transforms.Compose([
@@ -133,7 +139,8 @@ def main():
             w = meta['width'].numpy()[0]
             h = meta['height'].numpy()[0]
 
-            output = model(image.cuda())
+            image = image.to(device)
+            output = model(image)
             upsample = torch.nn.Upsample(size=input_size, mode='bilinear', align_corners=True)
             upsample_output = upsample(output[0][-1][0].unsqueeze(0))
             upsample_output = upsample_output.squeeze()
