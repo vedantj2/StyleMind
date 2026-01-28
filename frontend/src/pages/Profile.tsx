@@ -1,6 +1,6 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Sidebar, SidebarBody, SidebarLink } from "@/components/ui/sidebar";
-import { LayoutDashboard, UserCog, Settings, LogOut, Camera, Edit2, Save, X } from "lucide-react";
+import { LayoutDashboard, UserCog, Settings, LogOut, Camera, Edit2, Save, X, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,13 @@ export function Profile() {
       href: "/dashboard/profile",
       icon: (
         <UserCog className="text-white h-5 w-5 flex-shrink-0" />
+      ),
+    },
+    {
+      label: "Outfit Recommendations",
+      href: "/dashboard/outfit-recommendations",
+      icon: (
+        <Sparkles className="text-white h-5 w-5 flex-shrink-0" />
       ),
     },
     {
@@ -174,6 +181,42 @@ const ProfileContent = ({
   onCancel 
 }: ProfileContentProps) => {
   const [profileImage, setProfileImage] = useState("https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=400&h=400&fit=crop");
+  const [wardrobeItems, setWardrobeItems] = useState<Array<{
+    _id: string;
+    url: string;
+    created_at?: string | null;
+    tags?: {
+      garment_type?: string;
+      primary_color?: string;
+      season?: string;
+    };
+  }>>([]);
+  const [wardrobeLoading, setWardrobeLoading] = useState(false);
+  const [wardrobeError, setWardrobeError] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [typeFilter, setTypeFilter] = useState<string>("all");
+
+  useEffect(() => {
+    const fetchWardrobeItems = async () => {
+      setWardrobeLoading(true);
+      setWardrobeError(null);
+      try {
+        const res = await fetch("http://localhost:5000/wardrobe-items");
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Failed to load wardrobe items (${res.status})`);
+        }
+        const data = await res.json();
+        setWardrobeItems(data.items || []);
+      } catch (err) {
+        setWardrobeError(err instanceof Error ? err.message : "Failed to load wardrobe items");
+      } finally {
+        setWardrobeLoading(false);
+      }
+    };
+
+    fetchWardrobeItems();
+  }, []);
 
   return (
     <div className="flex flex-1 flex-col overflow-y-auto">
@@ -316,7 +359,7 @@ const ProfileContent = ({
         <div className="profile-stats">
           <div className="stat-item">
             <div className="stat-value">247</div>
-            <div className="stat-label">Wardrobe Items</div>
+            <div className="stat-label">Wardrobe</div>
           </div>
           <div className="stat-item">
             <div className="stat-value">156</div>
@@ -326,6 +369,135 @@ const ProfileContent = ({
             <div className="stat-value">892</div>
             <div className="stat-label">Followers</div>
           </div>
+        </div>
+
+        {/* Wardrobe grid below stats */}
+        <div className="wardrobe-section">
+          <h2 className="wardrobe-title">Wardrobe Items</h2>
+          {wardrobeLoading && (
+            <p className="wardrobe-status">Loading wardrobe items...</p>
+          )}
+          {wardrobeError && (
+            <p className="wardrobe-status wardrobe-error">{wardrobeError}</p>
+          )}
+          {!wardrobeLoading && !wardrobeError && wardrobeItems.length === 0 && (
+            <p className="wardrobe-status">No items in your wardrobe yet.</p>
+          )}
+
+          {wardrobeItems.length > 0 && (
+            <>
+              <div className="wardrobe-controls">
+                <div className="wardrobe-control-group">
+                  <span className="wardrobe-control-label">Sort:</span>
+                  <button
+                    className={`wardrobe-control-button ${sortOrder === "newest" ? "active" : ""}`}
+                    onClick={() => setSortOrder("newest")}
+                  >
+                    Newest
+                  </button>
+                  <button
+                    className={`wardrobe-control-button ${sortOrder === "oldest" ? "active" : ""}`}
+                    onClick={() => setSortOrder("oldest")}
+                  >
+                    Oldest
+                  </button>
+                </div>
+                <div className="wardrobe-control-group">
+                  <span className="wardrobe-control-label">Filter:</span>
+                  <select
+                    className="wardrobe-select"
+                    value={typeFilter}
+                    onChange={(e) => setTypeFilter(e.target.value)}
+                  >
+                    <option value="all">All types</option>
+                    {Array.from(
+                      new Set(
+                        wardrobeItems
+                          .map((item) => item.tags?.garment_type)
+                          .filter((t): t is string => Boolean(t))
+                      )
+                    ).map((type) => (
+                      <option key={type} value={type}>
+                        {type}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {(() => {
+                const filtered = wardrobeItems.filter((item) => {
+                  if (typeFilter === "all") return true;
+                  return (item.tags?.garment_type || "").toLowerCase() === typeFilter.toLowerCase();
+                });
+
+                const sorted = [...filtered].sort((a, b) => {
+                  const aDate = a.created_at ? new Date(a.created_at).getTime() : 0;
+                  const bDate = b.created_at ? new Date(b.created_at).getTime() : 0;
+                  return sortOrder === "newest" ? bDate - aDate : aDate - bDate;
+                });
+
+                if (sorted.length === 0) {
+                  return (
+                    <p className="wardrobe-status">
+                      No items match the selected filter.
+                    </p>
+                  );
+                }
+
+                return (
+                  <div className="wardrobe-grid">
+                    {sorted.map((item) => (
+                      <div key={item._id} className="wardrobe-card">
+                        <div className="wardrobe-image-wrapper">
+                          {item.url ? (
+                            <>
+                              <img
+                                src={item.url}
+                                alt={item.tags?.garment_type || "Wardrobe item"}
+                                className="wardrobe-image"
+                              />
+                              <a
+                                href={item.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="wardrobe-open-link"
+                              >
+                                Open in new tab
+                              </a>
+                            </>
+                          ) : (
+                            <div className="wardrobe-placeholder">
+                              No image URL
+                            </div>
+                          )}
+                        </div>
+                        <div className="wardrobe-meta">
+                          <div className="wardrobe-meta-primary">
+                            <span className="wardrobe-tag">
+                              {item.tags?.garment_type || "Unknown type"}
+                            </span>
+                          </div>
+                          <div className="wardrobe-meta-secondary">
+                            {item.tags?.primary_color && (
+                              <span className="wardrobe-chip">
+                                {item.tags.primary_color}
+                              </span>
+                            )}
+                            {item.tags?.season && (
+                              <span className="wardrobe-chip">
+                                {item.tags.season}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
+            </>
+          )}
         </div>
       </div>
     </div>

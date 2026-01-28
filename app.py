@@ -23,6 +23,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import cv2
 import numpy as np
@@ -65,18 +66,21 @@ except Exception as e:
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://vedantjain0210_db_user:B3uuEkqgw8hV8oWa@wardrobe.eamzexq.mongodb.net/")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "TestDB")
 MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "Clothing")
+RECOMMENDED_OUTFITS_COLLECTION_NAME = os.getenv("RECOMMENDED_OUTFITS_COLLECTION_NAME", "recommended_outfits")
 
 # Initialize MongoDB client
 try:
     mongodb_client = MongoClient(MONGODB_URI)
     mongodb_db = mongodb_client[MONGODB_DB_NAME]
     mongodb_collection = mongodb_db[MONGODB_COLLECTION_NAME]
-    logging.info(f"✓ Connected to MongoDB: {MONGODB_DB_NAME}.{MONGODB_COLLECTION_NAME}")
+    outfits_collection = mongodb_db[RECOMMENDED_OUTFITS_COLLECTION_NAME]
+    logging.info(f"✓ Connected to MongoDB: {MONGODB_DB_NAME}.{MONGODB_COLLECTION_NAME} and {RECOMMENDED_OUTFITS_COLLECTION_NAME}")
 except Exception as e:
     logging.warning(f"Failed to connect to MongoDB: {e}. MongoDB operations will fail.")
     mongodb_client = None
     mongodb_db = None
     mongodb_collection = None
+    outfits_collection = None
 
 # Clothing items to extract and reconstruct (LIP dataset indices)
 CLOTHING_ITEMS = {
@@ -129,12 +133,45 @@ GARMENT_ROLE_MAP = {
     "sweatpants": "bottom",
     "leggings": "bottom",
     "socks": "accessory",
+    "shoe": "footwear",
     "shoes": "footwear",
     "boots": "footwear",
     "sneakers": "footwear",
     "sandals": "footwear",
     "flip-flops": "footwear",
 }
+
+
+def _crop_to_alpha_bbox(img: Image.Image) -> Image.Image:
+    """Crop transparent borders from an RGBA image. Returns original if no bbox found."""
+    if img.mode != "RGBA":
+        img = img.convert("RGBA")
+    alpha = img.split()[-1]
+    bbox = alpha.getbbox()
+    return img.crop(bbox) if bbox else img
+
+
+def merge_shoe_pair_image(left_shoe_path: Path, right_shoe_path: Path, output_path: Path, padding: int = 40) -> Path:
+    """
+    Merge left + right shoe extracted PNGs into a single transparent image (side-by-side).
+    This lets us reconstruct/tag a shoe *pair* in one OpenAI call.
+    """
+    left = Image.open(left_shoe_path).convert("RGBA")
+    right = Image.open(right_shoe_path).convert("RGBA")
+
+    left = _crop_to_alpha_bbox(left)
+    right = _crop_to_alpha_bbox(right)
+
+    max_h = max(left.height, right.height)
+    canvas_w = left.width + right.width + padding
+    canvas = Image.new("RGBA", (canvas_w, max_h), (0, 0, 0, 0))
+
+    canvas.paste(left, (0, (max_h - left.height) // 2), left)
+    canvas.paste(right, (left.width + padding, (max_h - right.height) // 2), right)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path)
+    return output_path
 
 # style -> formality
 STYLE_TO_FORMALITY = {
@@ -706,18 +743,20 @@ def get_presigned_url(filename: str, bucket_name: str = None, content_type: str 
     
     try:
         # Lambda function expects bucket_name and object_name
-        # Include Content-Type in fields and conditions so S3 stores it correctly
+        # Include Content-Type, Content-Disposition, and ACL in fields and conditions so S3 stores it correctly
         payload = {
             "bucket_name": bucket_name,
             "object_name": filename,
             "expiration": 3600,  # 1 hour expiration
             "fields": {
                 "Content-Type": content_type,
-                "Content-Disposition": "inline"  # Make browser display instead of download
+                "Content-Disposition": "inline",  # Make browser display instead of download
+                "acl": "public-read"  # Make the uploaded object publicly readable
             },
             "conditions": [
                 ["starts-with", "$Content-Type", "image/"],
-                ["eq", "$Content-Disposition", "inline"]
+                ["eq", "$Content-Disposition", "inline"],
+                ["eq", "$acl", "public-read"]
             ]
         }
         
@@ -877,6 +916,96 @@ def store_tags_in_mongodb(s3_url: str, tags: dict) -> str:
     except Exception as e:
         logging.error(f"Failed to store tags in MongoDB: {e}")
         raise RuntimeError(f"Failed to store tags in MongoDB: {e}") from e
+
+
+@app.route("/wardrobe-items", methods=["GET"])
+def get_wardrobe_items():
+    """
+    List all wardrobe items stored in MongoDB.
+    Returns documents created by store_tags_in_mongodb:
+      {
+        "_id": string,
+        "url": string,
+        "tags": dict,
+        "created_at": ISO 8601 string
+      }
+    """
+    if mongodb_collection is None:
+        return jsonify({"error": "MongoDB not connected"}), 500
+
+    try:
+        cursor = mongodb_collection.find().sort("created_at", -1)
+        items = []
+        for doc in cursor:
+            item = {
+                "_id": str(doc.get("_id")),
+                "url": doc.get("url"),
+                "tags": doc.get("tags", {}),
+            }
+            created_at = doc.get("created_at")
+            if isinstance(created_at, datetime):
+                item["created_at"] = created_at.isoformat()
+            else:
+                item["created_at"] = None
+            items.append(item)
+
+        return jsonify({"items": items})
+    except Exception as e:
+        logging.error(f"Failed to fetch wardrobe items from MongoDB: {e}")
+        return jsonify({"error": "Failed to fetch wardrobe items"}), 500
+
+
+@app.route("/recommended-outfits", methods=["GET"])
+def get_recommended_outfits():
+    """
+    List recommended outfits stored in MongoDB.
+    Expected document shape in recommended_outfits collection:
+      {
+        "_id": ObjectId,
+        "anchor_item_id": string,
+        "outfit_id": int,
+        "outfit_score": float,
+        "occasion": string,
+        "season": string,
+        "top": {...},
+        "bottom": {...},
+        "shoes": {...},
+        "outerwear": {...} | null,
+        "sunglasses": {...} | null,
+        "created_at": datetime
+      }
+    """
+    if outfits_collection is None:
+        return jsonify({"error": "MongoDB not connected"}), 500
+
+    try:
+        cursor = outfits_collection.find().sort("created_at", -1)
+        items = []
+        for doc in cursor:
+            item = {
+                "_id": str(doc.get("_id")),
+                "anchor_item_id": doc.get("anchor_item_id"),
+                "outfit_id": doc.get("outfit_id"),
+                "outfit_score": doc.get("outfit_score"),
+                "occasion": doc.get("occasion"),
+                "season": doc.get("season"),
+                "top": doc.get("top"),
+                "bottom": doc.get("bottom"),
+                "shoes": doc.get("shoes"),
+                "outerwear": doc.get("outerwear"),
+                "sunglasses": doc.get("sunglasses"),
+            }
+            created_at = doc.get("created_at")
+            if isinstance(created_at, datetime):
+                item["created_at"] = created_at.isoformat()
+            else:
+                item["created_at"] = None
+            items.append(item)
+
+        return jsonify({"items": items})
+    except Exception as e:
+        logging.error(f"Failed to fetch recommended outfits from MongoDB: {e}")
+        return jsonify({"error": "Failed to fetch recommended outfits"}), 500
 
 
 def generate_garment_tags(image_path: str) -> dict:
@@ -1049,7 +1178,7 @@ Important:
             tags["secondary_colors"] = []
         if not isinstance(tags["keywords"], list):
             tags["keywords"] = []
-
+        
         # Enrich/normalize without overwriting existing fields
         tags = enrich_tags(tags)
 
@@ -1190,75 +1319,118 @@ def reconstruct():
             
             if not items_to_reconstruct:
                 return jsonify({"error": "No matching clothing items found for reconstruction"}), 500
+
+            # If both left and right shoes exist, merge them into a single "shoe pair" image
+            # so we only do one reconstruction + tagging call for footwear.
+            try:
+                left_idx = CLOTHING_ITEMS.get("Left-shoe")
+                right_idx = CLOTHING_ITEMS.get("Right-shoe")
+                left_shoe_path = None
+                right_shoe_path = None
+
+                for p in items_to_reconstruct:
+                    try:
+                        idx = int(p.stem.split("_")[0])
+                    except Exception:
+                        continue
+                    if idx == left_idx:
+                        left_shoe_path = p
+                    elif idx == right_idx:
+                        right_shoe_path = p
+
+                if left_shoe_path and right_shoe_path:
+                    merged_name = f"{left_idx:02d}_shoe_pair.png"
+                    merged_path = clothes_dir / merged_name
+                    merge_shoe_pair_image(left_shoe_path, right_shoe_path, merged_path)
+
+                    items_to_reconstruct = [
+                        p for p in items_to_reconstruct if p not in (left_shoe_path, right_shoe_path)
+                    ]
+                    items_to_reconstruct.append(merged_path)
+                    logging.info(
+                        f"✓ Merged shoes into one item for reconstruction: {merged_path.name}"
+                    )
+            except Exception as e:
+                logging.warning(f"Failed to merge left/right shoes; continuing separately: {e}")
             
-            # Process each item: clean, reconstruct, and tag
-            reconstructed_images = []
-            for item_path in items_to_reconstruct:
+            def _item_name_for_path(item_path: Path) -> str:
                 # Extract item name from CLOTHING_ITEMS dictionary
                 try:
                     idx_str = item_path.stem.split('_')[0]
                     idx = int(idx_str)
-                    # Find the item name from CLOTHING_ITEMS
                     item_name = None
                     for name, item_idx in CLOTHING_ITEMS.items():
                         if item_idx == idx:
                             item_name = name
                             break
-                    
-                    # Fallback to filename if not found in dictionary
                     if not item_name:
                         item_name = item_path.stem.split('_', 1)[1] if '_' in item_path.stem else item_path.stem
                 except (ValueError, IndexError):
                     item_name = item_path.stem.split('_', 1)[1] if '_' in item_path.stem else item_path.stem
-                
+
+                # Special-case: if we created a merged shoe pair image, label it as a pair
+                if "shoe_pair" in item_path.stem.lower():
+                    item_name = "Shoes"
+                return item_name
+
+            def _process_one_item(item_path: Path) -> dict:
+                item_name = _item_name_for_path(item_path)
                 logging.info(f"Processing: {item_name}")
-                
+
+                # Stage 2: Clean garment isolation
+                cleaned_path = clean_garment_isolation(item_path)
+
+                # Stage 3: Reconstruct with OpenAI
+                reconstructed_path = reconstruct_with_openai(cleaned_path, item_name)
+
+                # Stage 4: Tags
+                tags = None
                 try:
-                    # Stage 2: Clean garment isolation
-                    cleaned_path = clean_garment_isolation(item_path)
-                    
-                    # Stage 3: Reconstruct with OpenAI (pass item name for custom prompt)
-                    reconstructed_path = reconstruct_with_openai(cleaned_path, item_name)
-                    
-                    # Stage 4: Generate tags for reconstructed garment
-                    tags = None
+                    logging.info(f"Generating tags for: {item_name}")
+                    tags = generate_garment_tags(str(reconstructed_path))
+                    logging.info(f"✓ Tags generated for: {item_name}")
+                except Exception as tag_error:
+                    logging.warning(f"Failed to generate tags for {item_name}: {tag_error}")
+
+                # Stage 5: Upload + Mongo
+                s3_url = None
+                mongodb_id = None
+                try:
+                    unique_filename = f"{uuid.uuid4()}_{item_name}_{reconstructed_path.name}"
+                    logging.info(f"Uploading {item_name} to S3...")
+                    s3_url = upload_to_s3(reconstructed_path, unique_filename)
+                    logging.info(f"✓ Uploaded {item_name} to S3: {s3_url}")
+
+                    if tags:
+                        mongodb_id = store_tags_in_mongodb(s3_url, tags)
+                        logging.info(f"✓ Stored tags in MongoDB: {mongodb_id}")
+                except Exception as upload_error:
+                    logging.error(f"Failed to upload {item_name} to S3 or store in MongoDB: {upload_error}")
+
+                return {
+                    "name": item_name,
+                    "path": reconstructed_path,
+                    "tags": tags,
+                    "s3_url": s3_url,
+                    "mongodb_id": mongodb_id,
+                }
+
+            # Process each item in parallel (bounded) to reduce total time.
+            reconstructed_images = []
+            max_workers = int(os.getenv("RECONSTRUCT_MAX_WORKERS", "3"))
+            max_workers = max(1, min(max_workers, len(items_to_reconstruct)))
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_process_one_item, p): p for p in items_to_reconstruct}
+                for fut in as_completed(futures):
+                    item_path = futures[fut]
                     try:
-                        logging.info(f"Generating tags for: {item_name}")
-                        tags = generate_garment_tags(str(reconstructed_path))
-                        logging.info(f"✓ Tags generated for: {item_name}")
-                    except Exception as tag_error:
-                        logging.warning(f"Failed to generate tags for {item_name}: {tag_error}")
-                        # Continue without tags if tagging fails
-                    
-                    # Stage 5: Upload to S3
-                    s3_url = None
-                    mongodb_id = None
-                    try:
-                        # Generate unique filename
-                        unique_filename = f"{uuid.uuid4()}_{item_name}_{reconstructed_path.name}"
-                        logging.info(f"Uploading {item_name} to S3...")
-                        s3_url = upload_to_s3(reconstructed_path, unique_filename)
-                        logging.info(f"✓ Uploaded {item_name} to S3: {s3_url}")
-                        
-                        # Store tags in MongoDB if available
-                        if tags:
-                            mongodb_id = store_tags_in_mongodb(s3_url, tags)
-                            logging.info(f"✓ Stored tags in MongoDB: {mongodb_id}")
-                    except Exception as upload_error:
-                        logging.error(f"Failed to upload {item_name} to S3 or store in MongoDB: {upload_error}")
-                        # Continue without S3 URL if upload fails
-                    
-                    reconstructed_images.append({
-                        "name": item_name,
-                        "path": reconstructed_path,
-                        "tags": tags,
-                        "s3_url": s3_url,
-                        "mongodb_id": mongodb_id
-                    })
-                    logging.info(f"✓ Reconstructed: {item_name}")
-                except Exception as e:
-                    logging.warning(f"Failed to reconstruct {item_name}: {e}")
-                    continue
+                        info = fut.result()
+                        reconstructed_images.append(info)
+                        logging.info(f"✓ Reconstructed: {info.get('name')}")
+                    except Exception as e:
+                        logging.warning(f"Failed to reconstruct {item_path.name}: {e}")
+                        continue
             
             if not reconstructed_images:
                 return jsonify({"error": "Failed to reconstruct any clothing items"}), 500
@@ -1266,15 +1438,15 @@ def reconstruct():
             # Build response with S3 URLs (only for reconstructed images)
             reconstructed_data = []
             for img_info in reconstructed_images:
-                item_data = {
-                    "name": img_info["name"],
+                    item_data = {
+                        "name": img_info["name"],
                     "s3_url": img_info.get("s3_url"),
                     "mongodb_id": img_info.get("mongodb_id")
-                }
-                # Include tags if available
-                if img_info.get("tags"):
-                    item_data["tags"] = img_info["tags"]
-                reconstructed_data.append(item_data)
+                    }
+                    # Include tags if available
+                    if img_info.get("tags"):
+                        item_data["tags"] = img_info["tags"]
+                    reconstructed_data.append(item_data)
             
             logging.info(f"✓ Pipeline complete - processed {len(reconstructed_images)} reconstructed images")
             

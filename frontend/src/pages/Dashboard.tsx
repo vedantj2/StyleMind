@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Sidebar, SidebarBody, SidebarLink } from "@/components/ui/sidebar";
-import { LayoutDashboard, UserCog, Settings, LogOut, Home } from "lucide-react";
+import { LayoutDashboard, UserCog, Settings, LogOut, Home, Sparkles } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,13 @@ export function Dashboard() {
       href: "/dashboard/profile",
       icon: (
         <UserCog className="text-white h-5 w-5 flex-shrink-0" />
+      ),
+    },
+    {
+      label: "Outfit Recommendations",
+      href: "/dashboard/outfit-recommendations",
+      icon: (
+        <Sparkles className="text-white h-5 w-5 flex-shrink-0" />
       ),
     },
     {

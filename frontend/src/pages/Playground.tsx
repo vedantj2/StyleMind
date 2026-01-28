@@ -19,14 +19,17 @@ interface GarmentTags {
   keywords: string[]
 }
 
-interface ExtractionResult {
-  originalImage: string
-  maskImage: string
-  reconstructedImages: Array<{ 
-    name: string
-    image: string
-    tags?: GarmentTags
-  }>
+interface ReconstructedItem {
+  name: string
+  s3_url: string | null
+  mongodb_id?: string
+  tags?: GarmentTags
+}
+
+interface ReconstructionResponse {
+  success: boolean
+  message: string
+  reconstructedImages: ReconstructedItem[]
 }
 
 function Playground() {
@@ -34,7 +37,7 @@ function Playground() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [results, setResults] = useState<ExtractionResult | null>(null)
+  const [results, setResults] = useState<ReconstructionResponse | null>(null)
 
   const handleImageUpload = (file: File) => {
     const reader = new FileReader()
@@ -68,8 +71,7 @@ function Playground() {
         throw new Error(errorData.error || `Server error: ${response.status}`)
       }
 
-      // Parse JSON response
-      const data = await response.json()
+      const data: ReconstructionResponse = await response.json()
       setResults(data)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred')
@@ -139,29 +141,29 @@ function Playground() {
 
             {results && (
               <div className="results-table">
-                {/* First row: Original and Mask */}
-                <div className="table-row">
-                  <div className="table-cell image-cell">
-                    <div className="cell-header">Original Image</div>
-                    <div className="image-container">
-                      <img src={results.originalImage} alt="Original" />
-                    </div>
-                  </div>
-                  <div className="table-cell image-cell">
-                    <div className="cell-header">Parsing Mask</div>
-                    <div className="image-container">
-                      <img src={results.maskImage} alt="Mask" />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Subsequent rows: Reconstructed images and tags */}
+                {/* Reconstructed images and tags from S3 / Mongo */}
                 {results.reconstructedImages.map((item, index) => (
                   <div key={index} className="table-row">
                     <div className="table-cell image-cell">
-                      <div className="cell-header">{item.name}</div>
+                      <div className="cell-header">
+                        {item.name}
+                        {item.mongodb_id && (
+                          <span className="mongo-id"> (ID: {item.mongodb_id})</span>
+                        )}
+                      </div>
                       <div className="image-container">
-                        <img src={item.image} alt={item.name} />
+                        {item.s3_url ? (
+                          <>
+                            <img src={item.s3_url} alt={item.name} />
+                            <div className="image-actions">
+                              <a href={item.s3_url} target="_blank" rel="noopener noreferrer">
+                                Open in new tab
+                              </a>
+                            </div>
+                          </>
+                        ) : (
+                          <p>No image URL available</p>
+                        )}
                       </div>
                     </div>
                     <div className="table-cell tags-cell">

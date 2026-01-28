@@ -6,6 +6,7 @@ import Playground from './pages/Playground'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Profile from './pages/Profile'
+import OutfitRecommendations from './pages/OutfitRecommendations'
 import './App.css'
 
 function App() {
@@ -26,6 +27,7 @@ function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/dashboard/profile" element={<Profile />} />
+          <Route path="/dashboard/outfit-recommendations" element={<OutfitRecommendations />} />
         </Routes>
       </div>
     </Router>
