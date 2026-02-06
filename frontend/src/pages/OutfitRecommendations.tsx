@@ -19,14 +19,18 @@ interface OutfitSlot {
 interface OutfitItem {
   _id: string;
   anchor_item_id?: string;
+  anchor_item?: OutfitSlot | null;
   outfit_id?: number;
   outfit_score?: number;
   occasion?: string;
-  season?: string;
+  weather?: string;
+  region?: string;
+  age_group?: string;
   top?: OutfitSlot | null;
   bottom?: OutfitSlot | null;
   shoes?: OutfitSlot | null;
   outerwear?: OutfitSlot | null;
+  accessories?: OutfitSlot | null;
   sunglasses?: OutfitSlot | null;
   created_at?: string | null;
 }
@@ -195,19 +199,39 @@ const OutfitRecommendationsContent = () => {
         )}
 
         {items.length > 0 && (
-          <div className="wardrobe-grid">
+          <div className="outfits-column">
             {items.map((item) => {
               const parts: Array<{
                 label: string;
                 slot?: OutfitSlot | null;
               }> = [
+                { label: "Anchor Item", slot: item.anchor_item },
                 { label: "Top", slot: item.top },
                 { label: "Bottom", slot: item.bottom },
                 { label: "Shoes", slot: item.shoes },
-              ];
+                { label: "Outerwear", slot: item.outerwear },
+                { label: "Accessories", slot: item.accessories },
+                { label: "Sunglasses", slot: item.sunglasses },
+              ].filter(part => part.slot !== null && part.slot !== undefined); // Only show parts that exist
 
               return (
-                <div key={item._id} className="wardrobe-card">
+                <div key={item._id} className="wardrobe-card outfit-card">
+                  {(item.occasion || item.weather || item.region || item.outfit_score !== undefined) && (
+                    <div className="outfit-header">
+                      {item.occasion && (
+                        <span className="outfit-meta-chip">Occasion: {item.occasion}</span>
+                      )}
+                      {item.weather && (
+                        <span className="outfit-meta-chip">Weather: {item.weather}</span>
+                      )}
+                      {item.region && (
+                        <span className="outfit-meta-chip">Region: {item.region}</span>
+                      )}
+                      {item.outfit_score !== undefined && (
+                        <span className="outfit-meta-chip">Score: {item.outfit_score.toFixed(1)}</span>
+                      )}
+                    </div>
+                  )}
                   <div className="outfit-parts-row">
                     {parts.map(({ label, slot }) => (
                       <div key={label} className="outfit-part">
@@ -235,6 +259,11 @@ const OutfitRecommendationsContent = () => {
                                 {t}
                               </span>
                             ))}
+                          </div>
+                        )}
+                        {slot?.similarity_score !== undefined && (
+                          <div className="outfit-score">
+                            Score: {slot.similarity_score.toFixed(1)}
                           </div>
                         )}
                       </div>

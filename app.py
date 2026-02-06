@@ -65,7 +65,7 @@ except Exception as e:
 # MongoDB configuration
 MONGODB_URI = os.getenv("MONGODB_URI", "mongodb+srv://vedantjain0210_db_user:B3uuEkqgw8hV8oWa@wardrobe.eamzexq.mongodb.net/")
 MONGODB_DB_NAME = os.getenv("MONGODB_DB_NAME", "TestDB")
-MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "Clothing")
+MONGODB_COLLECTION_NAME = os.getenv("MONGODB_COLLECTION_NAME", "clothing")
 RECOMMENDED_OUTFITS_COLLECTION_NAME = os.getenv("RECOMMENDED_OUTFITS_COLLECTION_NAME", "recommended_outfits")
 
 # Initialize MongoDB client
@@ -107,6 +107,7 @@ COLOR_TEMPERATURE_ENUM = {"warm", "cool", "neutral"}
 
 # garment_type -> garment_role
 GARMENT_ROLE_MAP = {
+    # Western clothing
     "t-shirt": "top",
     "shirt": "top",
     "blouse": "top",
@@ -139,6 +140,24 @@ GARMENT_ROLE_MAP = {
     "sneakers": "footwear",
     "sandals": "footwear",
     "flip-flops": "footwear",
+    # Indian/Ethnic clothing
+    "kurta": "top",
+    "kurti": "top",
+    "sari": "top",
+    "saree": "top",
+    "kameez": "top",
+    "anarkali": "top",
+    "sherwani": "top",
+    "lungi": "bottom",
+    "pajama": "bottom",
+    "pyjama": "bottom",
+    "dhoti": "bottom",
+    "salwar": "bottom",
+    "churidar": "bottom",
+    "patiala": "bottom",
+    "lehenga": "bottom",
+    "dupatta": "accessory",
+    "chunni": "accessory",
 }
 
 
@@ -385,6 +404,81 @@ def extract_all_clothing_items(repo_root: Path, original_path: Path, mask_path: 
     logging.info("✓ Extracted all clothing items")
 
 
+def detect_product_image(image_path: Path) -> tuple[bool, Optional[str]]:
+    """
+    Detect if an image is a product-style image (no person, just clothing item on background).
+    Uses GPT-4o Vision to analyze the image.
+    
+    Args:
+        image_path: Path to the image file
+    
+    Returns:
+        tuple: (is_product_image: bool, item_type: Optional[str])
+               item_type is a guess of what clothing item it might be (e.g., "kurta", "sari", "shirt")
+    """
+    try:
+        # Read and encode image as base64
+        with open(image_path, "rb") as f:
+            image_data = f.read()
+        image_b64 = base64.b64encode(image_data).decode()
+        
+        # Determine MIME type
+        ext = image_path.suffix.lower()
+        mime_type = "image/png" if ext == '.png' else "image/jpeg"
+        
+        prompt = """Analyze this image and determine:
+1. Does this image contain a person wearing clothes? (yes/no)
+2. Is this a product-style image with just a clothing item on a background (white/plain)? (yes/no)
+3. If it's a product image, what type of clothing item is it? (e.g., "kurta", "sari", "shirt", "pants", "dress", etc.)
+
+Respond in JSON format:
+{
+  "has_person": true/false,
+  "is_product_image": true/false,
+  "item_type": "string or null"
+}"""
+        
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{image_b64}"}
+                        }
+                    ]
+                }
+            ],
+            max_tokens=200,
+            temperature=0.1
+        )
+        
+        content = response.choices[0].message.content.strip()
+        
+        # Clean JSON response
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        result = json.loads(content)
+        is_product = result.get("is_product_image", False)
+        item_type = result.get("item_type")
+        
+        logging.info(f"Product image detection: is_product={is_product}, item_type={item_type}")
+        return is_product, item_type
+        
+    except Exception as e:
+        logging.warning(f"Failed to detect product image, assuming person image: {e}")
+        return False, None
+
+
 def clean_garment_isolation(image_path: Path) -> Path:
     """
     Stage 2: Clean garment isolation using OpenCV.
@@ -578,14 +672,121 @@ def _generate_reconstruction_prompt(item_name: str = None) -> str:
         ]
     elif "upper" in item_lower or item_name == "Upper-clothes":
         item_specific = [
-            "This is an upper body garment (shirt, t-shirt, etc.) - reconstruct ONLY this garment",
+            "This is an upper body garment (shirt, t-shirt, kurta, etc.) - reconstruct ONLY this garment",
             "Lay it completely flat",
             "Show the garment from the front view",
             "Symmetric shape",
             "Remove all wrinkles and folds",
             "Preserve fabric texture exactly",
             "Preserve all colors, patterns, logos, and text exactly",
+            "If this is an Indian garment (Kurta, etc.), maintain traditional design elements, neckline style, and length",
             "Show neckline, sleeves, and hem clearly"
+        ]
+    elif "kurta" in item_lower or "kurti" in item_lower:
+        item_specific = [
+            "This is a Kurta/Kurti (Indian traditional upper garment) - reconstruct ONLY this garment",
+            "Lay it completely flat",
+            "Show the kurta from the front view",
+            "Symmetric shape with traditional Indian styling",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, embroidery, prints, and all design details exactly",
+            "Maintain traditional kurta features: appropriate length, side slits, and neckline style",
+            "Preserve all colors, patterns, zari work, embroidery, and decorative elements",
+            "Show neckline (round, V-neck, or traditional style), sleeves, and hem clearly"
+        ]
+    elif "sari" in item_lower or "saree" in item_lower:
+        item_specific = [
+            "This is a Sari/Saree (Indian traditional garment) - reconstruct ONLY the sari fabric",
+            "Lay the sari fabric completely flat in a traditional draped or folded manner",
+            "Show the full length of the sari (typically 5-9 yards)",
+            "Preserve the pallu (decorative end) and border patterns exactly",
+            "Remove all wrinkles and folds while maintaining natural drape appearance",
+            "Preserve fabric texture, zari work, embroidery, prints, and all design details exactly",
+            "Maintain traditional sari characteristics: border design, pallu design, and body pattern",
+            "Show the complete sari including all decorative elements and patterns"
+        ]
+    elif "lungi" in item_lower:
+        item_specific = [
+            "This is a Lungi (Indian traditional lower garment) - reconstruct ONLY the lungi",
+            "Lay it completely flat or show it in a traditional wrapped/folded style",
+            "Show the full length and width of the lungi",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, patterns, and all design details exactly",
+            "Maintain traditional lungi characteristics: checkered patterns, stripes, or solid colors",
+            "Show the complete lungi including borders and decorative elements if present"
+        ]
+    elif "pajama" in item_lower or "pyjama" in item_lower:
+        item_specific = [
+            "This is a Pajama/Pyjama (Indian traditional lower garment) - reconstruct ONLY the pajama",
+            "Lay it completely flat",
+            "Show the pajama from the front view",
+            "Symmetric shape with both legs aligned",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, and all details",
+            "Maintain traditional pajama features: loose fit, drawstring or elastic waist, and leg openings",
+            "Show waistband and leg openings clearly"
+        ]
+    elif "dhoti" in item_lower:
+        item_specific = [
+            "This is a Dhoti (Indian traditional lower garment) - reconstruct ONLY the dhoti",
+            "Lay it completely flat or show it in a traditional wrapped style",
+            "Show the full length and width of the dhoti",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, and all design details exactly",
+            "Maintain traditional dhoti characteristics: white or colored fabric, pleated style",
+            "Show the complete dhoti including all folds and pleats"
+        ]
+    elif "salwar" in item_lower or "kameez" in item_lower:
+        item_specific = [
+            "This is a Salwar Kameez (Indian traditional outfit) - reconstruct ONLY this garment",
+            "If this is the Kameez (top): lay it flat, show front view, preserve all embroidery and patterns",
+            "If this is the Salwar (bottom): lay it flat, show traditional loose fit and tapered legs",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, embroidery, zari work, and all design details exactly",
+            "Maintain traditional Salwar Kameez features: appropriate length, traditional neckline, and styling",
+            "Show neckline, sleeves, and hem clearly for kameez, or waistband and leg openings for salwar"
+        ]
+    elif "lehenga" in item_lower:
+        item_specific = [
+            "This is a Lehenga (Indian traditional skirt) - reconstruct ONLY the lehenga",
+            "Lay it completely flat showing the full circular or A-line shape",
+            "Show the lehenga from the front view",
+            "Symmetric shape",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, embroidery, zari work, and all decorative details exactly",
+            "Maintain traditional lehenga characteristics: pleats, borders, and embellishments",
+            "Show waistband, pleats, and hem clearly"
+        ]
+    elif "anarkali" in item_lower:
+        item_specific = [
+            "This is an Anarkali (Indian traditional dress) - reconstruct ONLY this garment",
+            "Lay it completely flat",
+            "Show the Anarkali from the front view",
+            "Symmetric shape with traditional flared style",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, embroidery, and all design details exactly",
+            "Maintain traditional Anarkali features: fitted top, flared bottom, and traditional neckline",
+            "Show neckline, sleeves, and flared hem clearly"
+        ]
+    elif "sherwani" in item_lower:
+        item_specific = [
+            "This is a Sherwani (Indian traditional men's garment) - reconstruct ONLY this garment",
+            "Lay it completely flat",
+            "Show the Sherwani from the front view",
+            "Symmetric shape",
+            "Remove all wrinkles and folds",
+            "Preserve fabric texture, color, embroidery, buttons, and all design details exactly",
+            "Maintain traditional Sherwani features: long length, traditional collar, and front opening",
+            "Show collar, buttons/closure, sleeves, and hem clearly"
+        ]
+    elif "dupatta" in item_lower or "chunni" in item_lower:
+        item_specific = [
+            "This is a Dupatta/Chunni (Indian traditional scarf) - reconstruct ONLY this item",
+            "Lay it completely flat or show it in a natural draped position",
+            "Show the full length and width of the dupatta",
+            "Preserve fabric texture, color, patterns, embroidery, zari work, and all details exactly",
+            "Maintain traditional dupatta characteristics: borders, pallu design, and decorative elements",
+            "Show the complete dupatta including all decorative patterns and borders"
         ]
     else:
         # Generic prompt for unknown items
@@ -595,7 +796,8 @@ def _generate_reconstruction_prompt(item_name: str = None) -> str:
             "Symmetric shape",
             "Remove all wrinkles and folds",
             "Preserve fabric texture exactly",
-            "Preserve all colors, patterns, logos, and text exactly"
+            "Preserve all colors, patterns, logos, and text exactly",
+            "If this appears to be an Indian/Ethnic garment, maintain traditional design elements and styling"
         ]
     
     # Combine base and item-specific elements
@@ -615,12 +817,13 @@ def reconstruct_with_openai(image_path: Path, item_name: str = None) -> Path:
     
     Args:
         image_path: Path to the cleaned garment image
-        item_name: Name of the clothing item (e.g., "Sunglasses", "Left-shoe", "Upper-clothes")
+        item_name: Name of the clothing item (e.g., "Sunglasses", "Left-shoe", "Upper-clothes", "Kurta", "Sari")
                    Used to generate item-specific reconstruction prompts.
+                   For Indian garments, item_name may contain keywords like "kurta", "sari", "lungi", "pajama", etc.
     """
     logging.info(f"Stage 3: Reconstructing {item_name or 'garment'} with OpenAI API...")
     
-    # Generate item-specific prompt
+    # Generate item-specific prompt (handles both Western and Indian clothing)
     prompt = _generate_reconstruction_prompt(item_name)
     
     try:
@@ -937,10 +1140,33 @@ def get_wardrobe_items():
         cursor = mongodb_collection.find().sort("created_at", -1)
         items = []
         for doc in cursor:
+            tags = doc.get("tags", {})
+            
+            # Transform tags to match frontend expectations
+            # Frontend expects: garment_type, primary_color, season
+            transformed_tags = tags.copy()
+            
+            # Map category to garment_type for frontend compatibility
+            if "category" in tags and "garment_type" not in tags:
+                transformed_tags["garment_type"] = tags["category"]
+            
+            # Map primaryColor to primary_color for frontend compatibility
+            if "primaryColor" in tags and "primary_color" not in tags:
+                transformed_tags["primary_color"] = tags["primaryColor"]
+            
+            # Ensure season is available (convert array to string if needed for display)
+            if "season" in tags:
+                season_value = tags["season"]
+                if isinstance(season_value, list) and len(season_value) > 0:
+                    # Use first season or join them
+                    transformed_tags["season"] = season_value[0] if len(season_value) == 1 else ", ".join(season_value)
+                elif not isinstance(season_value, str):
+                    transformed_tags["season"] = str(season_value) if season_value else None
+            
             item = {
                 "_id": str(doc.get("_id")),
                 "url": doc.get("url"),
-                "tags": doc.get("tags", {}),
+                "tags": transformed_tags,
             }
             created_at = doc.get("created_at")
             if isinstance(created_at, datetime):
@@ -1021,19 +1247,24 @@ def generate_garment_tags(image_path: str) -> dict:
     Returns:
         dict: Structured JSON object with garment tags:
             {
-                "garment_type": string,
-                "sub_category": string,
-                "primary_color": string,
-                "secondary_colors": string[],
-                "fabric": string,
-                "texture": string,
-                "pattern": string,
-                "sleeve_type": string,
-                "fit": string,
-                "style": string,
-                "season": string,
-                "gender": "men" | "women" | "unisex",
-                "keywords": string[]
+                "productId": "string (UUID)",
+                "name": "string (optional)",
+                "gender": "FEMALE" | "MALE" | "UNISEX",
+                "category": "TOP" | "BOTTOM" | "SHOES" | "ACCESSORIES" | etc.,
+                "subCategory": "string (optional)",
+                "fabric": ["array of fabric types"],
+                "fit": "REGULAR" | "SLIM" | "LOOSE" | etc.,
+                "style": ["array of style types"],
+                "occasion": ["array of occasion types"],
+                "season": ["array of seasons (optional)"],
+                "weatherSupport": ["array of weather conditions"],
+                "primaryColor": "string",
+                "pattern": "string (optional)",
+                "sleeveType": "string (optional)",
+                "neckType": "string (optional)",
+                "regionBoost": ["array of regions (optional)"],
+                "priceBand": "string (optional)",
+                "brand": "string (optional)"
             }
     
     Raises:
@@ -1068,41 +1299,56 @@ def generate_garment_tags(image_path: str) -> dict:
         mime_type = "image/png"  # Default
     
     # Strict JSON prompt for garment tagging
-    prompt = """Analyze the clothing item or accessory in this image (this includes ALL types of garments: shirts, pants, shoes, hats, gloves, sunglasses, socks, scarves, dresses, coats, jumpsuits, and any other clothing items or fashion accessories).
+    prompt = """Analyze the clothing item or accessory in this image. This includes ALL types of garments: 
+- Western clothing: shirts, t-shirts, pants, jeans, shoes, hats, gloves, sunglasses, socks, scarves, dresses, coats, jumpsuits
+- Indian/Ethnic clothing: Sari (Saree), Kurta, Pajama, Lungi, Dhoti, Salwar Kameez, Lehenga, Anarkali, Sherwani, Kurta Pajama, Churidar, Patiala, Dupatta, etc.
+- Any other clothing items or fashion accessories from any culture
+
+IMPORTANT: Pay special attention to Indian/Ethnic garments. If you see a Sari, Kurta, Lungi, Pajama, or any traditional Indian garment, identify it correctly and use appropriate subCategory.
 
 Return STRICT JSON only. No markdown, no explanations, no code blocks. Just valid JSON.
 
-The JSON must have exactly this structure:
+The JSON must have exactly this structure with MANDATORY fields:
 {
-  "garment_type": "string (e.g., T-Shirt, Dress, Pants, Jacket, Shoe, Hat, Glove, Sunglasses, Sock, Scarf, etc.)",
-  "sub_category": "string (e.g., T-Shirt -> Crew Neck, V-Neck, Henley; Shoe -> Sneakers, Boots, Loafers; Hat -> Baseball Cap, Beanie, etc.)",
-  "primary_color": "string (e.g., navy blue, white, black)",
-  "secondary_colors": ["string array of additional colors if any"],
-  "fabric": "string (best guess: cotton, polyester, denim, silk, wool, leather, canvas, rubber, etc. - use 'N/A' for items where fabric doesn't apply like shoes)",
-  "texture": "string (best guess: smooth, ribbed, textured, knit, etc. - use 'N/A' if not applicable)",
-  "pattern": "string (solid, striped, floral, geometric, plaid, etc. or 'none' if solid)",
-  "sleeve_type": "string (long sleeve, short sleeve, sleeveless, cap sleeve, etc. - use 'N/A' if not applicable like for shoes, pants, etc.)",
-  "fit": "string (slim, regular, loose, oversized, fitted, etc. - use 'N/A' if not applicable)",
-  "style": "string (casual, formal, sporty, vintage, modern, athletic, etc.)",
-  "season": "string (spring, summer, fall, winter, all-season)",
-  "gender": "men" | "women" | "unisex",
-  "keywords": ["array of relevant descriptive keywords"]
+  "gender": "FEMALE" | "MALE" | "UNISEX" (MANDATORY - must be uppercase),
+  "category": "TOP" | "BOTTOM" | "SHOES" | "ACCESSORIES" | "OUTERWEAR" | "DRESS" | "JUMPSUIT" | "SARI" | "KURTA" | "LUNGI" | "PAJAMA" | etc. (MANDATORY - must be uppercase),
+  "fabric": ["array of fabric/material types like 'Linen', 'Cotton', 'Polyester', 'Wool', 'Leather', 'Canvas', 'Rubber', 'Silk', 'Georgette', 'Chiffon', 'Crepe', etc. - use ['N/A'] for items where fabric doesn't apply]" (MANDATORY - must be array),
+  "fit": "REGULAR" | "SLIM" | "LOOSE" | "OVERSIZED" | "FITTED" | "N/A" (MANDATORY - must be uppercase),
+  "style": ["array of style types like 'CASUAL', 'FORMAL', 'SPORTY', 'VINTAGE', 'MODERN', 'ATHLETIC', 'INDO_WESTERN', 'TRADITIONAL', 'ETHNIC', 'FESTIVE', 'BRIDAL', etc. - must be uppercase strings in array]" (MANDATORY - must be array),
+  "occasion": ["array of occasion types like 'OFFICE', 'DAILY', 'PARTY', 'WEDDING', 'SPORTS', 'CASUAL', 'FORMAL', 'FESTIVAL', 'CEREMONY', etc. - must be uppercase strings in array]" (MANDATORY - must be array),
+  "weatherSupport": ["array of weather conditions like 'HOT', 'COLD', 'HUMID', 'DRY', 'RAINY', 'WINDY', etc. - must be uppercase strings in array]" (MANDATORY - must be array),
+  "primaryColor": "string like 'Blue', 'Navy', 'Black', 'White', 'Red', etc." (MANDATORY)
+}
+
+OPTIONAL fields (include if applicable):
+{
+  "name": "string (descriptive name like 'Linen A-line Kurti', 'Silk Sari with Zari Work', 'Cotton Lungi', etc.)",
+  "subCategory": "string (e.g., 'KURTI', 'SARI', 'LUNGI', 'PAJAMA', 'DHOTI', 'SALWAR_KAMEEZ', 'LEHENGA', 'ANARKALI', 'SHERWANI', 'CHURIDAR', 'PATIALA', 'DUPATTA', 'T-SHIRT', 'SNEAKERS', 'OXFORD', etc. - uppercase)",
+  "season": ["array like 'SUMMER', 'WINTER', 'SPRING', 'FALL', 'ALL-SEASON' - uppercase strings in array]",
+  "pattern": "string like 'Solid', 'Striped', 'Floral', 'Geometric', 'Plaid', 'Zari', 'Embroidery', 'Printed', 'Embroidered', etc.",
+  "sleeveType": "string like '3/4 Sleeve', 'Long Sleeve', 'Short Sleeve', 'Sleeveless', 'N/A'",
+  "neckType": "string like 'Round', 'V-Neck', 'Collar', 'Hood', 'Mandarin', 'Boat Neck', 'N/A'",
+  "regionBoost": ["array of regions like 'SOUTH', 'EAST', 'NORTH', 'WEST', 'INDIA' - uppercase strings]",
+  "priceBand": "string like 'LOW', 'MID', 'HIGH', 'PREMIUM'",
+  "brand": "string (brand name if visible or inferrable)"
 }
 
 Important:
 - Return ONLY the JSON object, nothing else
-- All string values must be non-empty (use 'N/A' for fields that don't apply to the item type)
-- secondary_colors and keywords can be empty arrays [] if none apply
-- Use best-guess inference for fabric and texture if uncertain
-- For shoes, accessories, and other non-fabric items, set fabric to 'N/A' and use appropriate material terms
-- For items without sleeves (shoes, pants, hats, etc.), set sleeve_type to 'N/A'
+- All MANDATORY fields must be present
+- All enum values (gender, category, fit, style, occasion, weatherSupport) must be UPPERCASE
+- Arrays must be arrays, not single strings
+- For Indian garments: Use appropriate subCategory (SARI, KURTA, LUNGI, PAJAMA, etc.) and style should include 'TRADITIONAL' or 'ETHNIC' if applicable
+- Use best-guess inference for fabric, style, occasion, and weatherSupport if uncertain
+- For shoes, accessories, and other non-fabric items, set fabric to ['N/A']
+- For items without sleeves (shoes, pants, hats, etc.), set sleeveType to 'N/A' or omit it
+- For items without necklines, set neckType to 'N/A' or omit it
 - Analyze only the clothing item or accessory, not background or other elements"""
 
     try:
         logging.info(f"Generating tags for: {image_path_obj.name}")
         
         # Call OpenAI Vision API with GPT-4o (latest multimodal model)
-        # Note: GPT-4.1 doesn't exist; using GPT-4o which is the latest and best for vision
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -1122,7 +1368,7 @@ Important:
                     ]
                 }
             ],
-            max_tokens=1000,
+            max_tokens=1500,
             temperature=0.3  # Lower temperature for more consistent structured output
         )
         
@@ -1151,36 +1397,75 @@ Important:
                 f"Raw output (first 500 chars): {raw_content[:500]}"
             ) from e
         
-        # Validate required fields
-        required_fields = [
-            "garment_type", "sub_category", "primary_color", "secondary_colors",
-            "fabric", "texture", "pattern", "sleeve_type", "fit", "style",
-            "season", "gender", "keywords"
+        # Generate productId (UUID)
+        tags["productId"] = str(uuid.uuid4())
+        
+        # Validate mandatory fields
+        mandatory_fields = [
+            "gender", "category", "fabric", "fit", "style", 
+            "occasion", "weatherSupport", "primaryColor"
         ]
         
-        missing_fields = [field for field in required_fields if field not in tags]
+        missing_fields = [field for field in mandatory_fields if field not in tags]
         if missing_fields:
             raise ValueError(
-                f"Response missing required fields: {missing_fields}. "
+                f"Response missing mandatory fields: {missing_fields}. "
                 f"Received: {list(tags.keys())}"
             )
         
-        # Validate gender field
-        if tags["gender"] not in ["men", "women", "unisex"]:
+        # Validate and normalize gender field
+        gender_upper = tags["gender"].upper()
+        if gender_upper not in ["FEMALE", "MALE", "UNISEX"]:
             logging.warning(
-                f"Invalid gender value: {tags['gender']}. Expected 'men', 'women', or 'unisex'. "
-                f"Defaulting to 'unisex'."
+                f"Invalid gender value: {tags['gender']}. Expected 'FEMALE', 'MALE', or 'UNISEX'. "
+                f"Defaulting to 'UNISEX'."
             )
-            tags["gender"] = "unisex"
+            gender_upper = "UNISEX"
+        tags["gender"] = gender_upper
         
-        # Ensure arrays are lists
-        if not isinstance(tags["secondary_colors"], list):
-            tags["secondary_colors"] = []
-        if not isinstance(tags["keywords"], list):
-            tags["keywords"] = []
+        # Normalize category to uppercase
+        tags["category"] = tags["category"].upper()
         
-        # Enrich/normalize without overwriting existing fields
-        tags = enrich_tags(tags)
+        # Normalize fit to uppercase
+        tags["fit"] = tags["fit"].upper()
+        
+        # Ensure arrays are lists and normalize to uppercase
+        if not isinstance(tags["fabric"], list):
+            tags["fabric"] = [tags["fabric"]] if tags["fabric"] else ["N/A"]
+        tags["fabric"] = [f.upper() if isinstance(f, str) else str(f).upper() for f in tags["fabric"]]
+        
+        if not isinstance(tags["style"], list):
+            tags["style"] = [tags["style"]] if tags["style"] else []
+        tags["style"] = [s.upper() if isinstance(s, str) else str(s).upper() for s in tags["style"]]
+        
+        if not isinstance(tags["occasion"], list):
+            tags["occasion"] = [tags["occasion"]] if tags["occasion"] else []
+        tags["occasion"] = [o.upper() if isinstance(o, str) else str(o).upper() for o in tags["occasion"]]
+        
+        if not isinstance(tags["weatherSupport"], list):
+            tags["weatherSupport"] = [tags["weatherSupport"]] if tags["weatherSupport"] else []
+        tags["weatherSupport"] = [w.upper() if isinstance(w, str) else str(w).upper() for w in tags["weatherSupport"]]
+        
+        # Normalize optional array fields
+        if "season" in tags:
+            if not isinstance(tags["season"], list):
+                tags["season"] = [tags["season"]] if tags["season"] else []
+            tags["season"] = [s.upper() if isinstance(s, str) else str(s).upper() for s in tags["season"]]
+        
+        if "regionBoost" in tags:
+            if not isinstance(tags["regionBoost"], list):
+                tags["regionBoost"] = [tags["regionBoost"]] if tags["regionBoost"] else []
+            tags["regionBoost"] = [r.upper() if isinstance(r, str) else str(r).upper() for r in tags["regionBoost"]]
+        
+        # Normalize optional string fields to uppercase where applicable
+        if "subCategory" in tags and tags["subCategory"]:
+            tags["subCategory"] = tags["subCategory"].upper()
+        
+        if "pattern" in tags and tags["pattern"]:
+            tags["pattern"] = tags["pattern"].capitalize()
+        
+        if "priceBand" in tags and tags["priceBand"]:
+            tags["priceBand"] = tags["priceBand"].upper()
 
         logging.info(f"✓ Successfully generated tags for {image_path_obj.name}")
         return tags
@@ -1198,6 +1483,91 @@ Important:
 def health():
     """Health check endpoint."""
     return jsonify({"status": "healthy", "message": "Clothing reconstruction API is running"})
+
+
+@app.route("/segment", methods=["POST"])
+def segment():
+    """
+    Endpoint: Run simple extractor to get segmented clothing mask.
+    
+    Request:
+        - Form data with 'file' field containing image
+    
+    Response:
+        - JSON with base64 encoded segmented mask image:
+          {
+            "success": true,
+            "maskImage": "data:image/png;base64,...",
+            "originalImage": "data:image/png;base64,..." (optional)
+          }
+    """
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded (form field 'file' missing)"}), 400
+    
+    file = request.files["file"]
+    if not file or file.filename == "":
+        return jsonify({"error": "No selected file"}), 400
+    
+    repo_root = Path(__file__).resolve().parent
+    model_path = repo_root / MODEL_RESTORE
+    if not model_path.exists():
+        return jsonify({"error": f"Checkpoint not found at {model_path}"}), 500
+    
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = Path(tmpdir)
+            images_dir = tmpdir / "images"
+            output_dir = tmpdir / "output"
+            images_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save uploaded image
+            ext = Path(file.filename).suffix or ".png"
+            input_path = images_dir / f"input{ext}"
+            file.save(input_path)
+            logging.info(f"✓ Uploaded image: {input_path.name}")
+            
+            # Run simple extractor to generate segmentation mask
+            run_parsing(repo_root, images_dir, output_dir)
+            
+            # Get mask path - simple_extractor saves as {basename}.png
+            input_basename = input_path.stem
+            mask_path = output_dir / f"{input_basename}.png"
+            
+            # If mask doesn't exist, try to find any PNG file in output_dir
+            if not mask_path.exists():
+                png_files = list(output_dir.glob("*.png"))
+                if png_files:
+                    mask_path = png_files[0]
+                    logging.info(f"Using found mask: {mask_path.name}")
+                else:
+                    return jsonify({"error": f"Segmentation mask not generated. Expected: {mask_path}"}), 500
+            
+            # Read mask image and convert to base64
+            with open(mask_path, "rb") as mask_file:
+                mask_data = mask_file.read()
+                mask_base64 = base64.b64encode(mask_data).decode()
+            
+            # Optionally include original image
+            include_original = request.form.get("include_original", "false").lower() == "true"
+            response_data = {
+                "success": True,
+                "maskImage": f"data:image/png;base64,{mask_base64}"
+            }
+            
+            if include_original:
+                with open(input_path, "rb") as orig_file:
+                    orig_data = orig_file.read()
+                    orig_base64 = base64.b64encode(orig_data).decode()
+                    response_data["originalImage"] = f"data:image/{ext[1:] if ext else 'png'};base64,{orig_base64}"
+            
+            logging.info(f"✓ Segmentation mask generated successfully")
+            
+            return jsonify(response_data)
+    
+    except Exception as e:
+        logging.error(f"Segmentation Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/reconstruct", methods=["POST"])
@@ -1275,85 +1645,121 @@ def reconstruct():
             file.save(input_path)
             logging.info(f"✓ Uploaded image: {input_path.name}")
             
-            # Stage 1: Run parsing
-            run_parsing(repo_root, images_dir, output_dir)
+            # Detect if this is a product-style image (no person, just clothing item)
+            is_product_image, detected_item_type = detect_product_image(input_path)
             
-            # Get mask path - simple_extractor saves as {basename}.png
-            # Handle different extensions properly (e.g., input.jpeg -> input.png, not input.j.png)
-            input_basename = input_path.stem  # Gets name without extension
-            mask_path = output_dir / f"{input_basename}.png"
-            
-            # If mask doesn't exist, try to find any PNG file in output_dir (fallback)
-            if not mask_path.exists():
-                png_files = list(output_dir.glob("*.png"))
-                if png_files:
-                    mask_path = png_files[0]
-                    logging.info(f"Using found mask: {mask_path.name}")
-                else:
-                    return jsonify({"error": f"Parsing mask not generated. Expected: {mask_path}"}), 500
-            
-            # Stage 1 (continued): Extract all clothing items
-            clothes_dir = output_dir / "clothing"
-            clothes_dir.mkdir(parents=True, exist_ok=True)
-            extract_all_clothing_items(repo_root, input_path, mask_path, clothes_dir)
-            
-            # Find all extracted clothing items
-            extracted_files = list(clothes_dir.glob("*.png"))
-            if not extracted_files:
-                return jsonify({"error": "No clothing items found or extracted"}), 500
-            
-            # Filter to only the items we want to reconstruct
             items_to_reconstruct = []
-            for extracted_file in extracted_files:
-                # Extract index from filename (format: 02_hair.png -> index 2)
-                try:
-                    idx_str = extracted_file.stem.split('_')[0]
-                    idx = int(idx_str)
-                    # Check if this index is in our CLOTHING_ITEMS
-                    if idx in CLOTHING_ITEMS.values():
-                        items_to_reconstruct.append(extracted_file)
-                        item_name = [k for k, v in CLOTHING_ITEMS.items() if v == idx][0]
-                        logging.info(f"Found item to reconstruct: {item_name} ({extracted_file.name})")
-                except (ValueError, IndexError):
-                    continue
             
-            if not items_to_reconstruct:
-                return jsonify({"error": "No matching clothing items found for reconstruction"}), 500
+            if is_product_image:
+                # Handle product-style images: skip segmentation, process directly
+                logging.info(f"Detected product-style image. Item type: {detected_item_type}")
+                
+                # Create clothing directory
+                clothes_dir = output_dir / "clothing"
+                clothes_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Use the original image directly, but clean it first
+                cleaned_path = clean_garment_isolation(input_path)
+                
+                # Create a fake extracted file entry for processing
+                product_item_path = clothes_dir / "00_product_item.png"
+                
+                # Copy cleaned image to clothing directory
+                import shutil
+                shutil.copy(cleaned_path, product_item_path)
+                
+                items_to_reconstruct.append(product_item_path)
+                item_name = detected_item_type.capitalize() if detected_item_type else "Clothing"
+                logging.info(f"Processing product image as: {item_name}")
+            else:
+                # Normal flow: person wearing clothes - use segmentation
+                logging.info("Detected person image, using segmentation pipeline")
+                
+                # Stage 1: Run parsing
+                run_parsing(repo_root, images_dir, output_dir)
+                
+                # Get mask path - simple_extractor saves as {basename}.png
+                # Handle different extensions properly (e.g., input.jpeg -> input.png, not input.j.png)
+                input_basename = input_path.stem  # Gets name without extension
+                mask_path = output_dir / f"{input_basename}.png"
+                
+                # If mask doesn't exist, try to find any PNG file in output_dir (fallback)
+                if not mask_path.exists():
+                    png_files = list(output_dir.glob("*.png"))
+                    if png_files:
+                        mask_path = png_files[0]
+                        logging.info(f"Using found mask: {mask_path.name}")
+                    else:
+                        return jsonify({"error": f"Parsing mask not generated. Expected: {mask_path}"}), 500
+                
+                # Stage 1 (continued): Extract all clothing items
+                clothes_dir = output_dir / "clothing"
+                clothes_dir.mkdir(parents=True, exist_ok=True)
+                extract_all_clothing_items(repo_root, input_path, mask_path, clothes_dir)
+                
+                # Find all extracted clothing items
+                extracted_files = list(clothes_dir.glob("*.png"))
+                if not extracted_files:
+                    return jsonify({"error": "No clothing items found or extracted. If this is a product-style image (no person), please ensure the image shows a clothing item clearly."}), 500
+                
+                # Filter to only the items we want to reconstruct
+                for extracted_file in extracted_files:
+                    # Extract index from filename (format: 02_hair.png -> index 2)
+                    try:
+                        idx_str = extracted_file.stem.split('_')[0]
+                        idx = int(idx_str)
+                        # Check if this index is in our CLOTHING_ITEMS
+                        if idx in CLOTHING_ITEMS.values():
+                            items_to_reconstruct.append(extracted_file)
+                            item_name = [k for k, v in CLOTHING_ITEMS.items() if v == idx][0]
+                            logging.info(f"Found item to reconstruct: {item_name} ({extracted_file.name})")
+                    except (ValueError, IndexError):
+                        continue
+                
+                if not items_to_reconstruct:
+                    return jsonify({"error": "No matching clothing items found for reconstruction"}), 500
 
             # If both left and right shoes exist, merge them into a single "shoe pair" image
             # so we only do one reconstruction + tagging call for footwear.
-            try:
-                left_idx = CLOTHING_ITEMS.get("Left-shoe")
-                right_idx = CLOTHING_ITEMS.get("Right-shoe")
-                left_shoe_path = None
-                right_shoe_path = None
+            # Skip this for product images (they're already a single item)
+            if not is_product_image:
+                try:
+                    left_idx = CLOTHING_ITEMS.get("Left-shoe")
+                    right_idx = CLOTHING_ITEMS.get("Right-shoe")
+                    left_shoe_path = None
+                    right_shoe_path = None
 
-                for p in items_to_reconstruct:
-                    try:
-                        idx = int(p.stem.split("_")[0])
-                    except Exception:
-                        continue
-                    if idx == left_idx:
-                        left_shoe_path = p
-                    elif idx == right_idx:
-                        right_shoe_path = p
+                    for p in items_to_reconstruct:
+                        try:
+                            idx = int(p.stem.split("_")[0])
+                        except Exception:
+                            continue
+                        if idx == left_idx:
+                            left_shoe_path = p
+                        elif idx == right_idx:
+                            right_shoe_path = p
 
-                if left_shoe_path and right_shoe_path:
-                    merged_name = f"{left_idx:02d}_shoe_pair.png"
-                    merged_path = clothes_dir / merged_name
-                    merge_shoe_pair_image(left_shoe_path, right_shoe_path, merged_path)
+                    if left_shoe_path and right_shoe_path:
+                        merged_name = f"{left_idx:02d}_shoe_pair.png"
+                        merged_path = clothes_dir / merged_name
+                        merge_shoe_pair_image(left_shoe_path, right_shoe_path, merged_path)
 
-                    items_to_reconstruct = [
-                        p for p in items_to_reconstruct if p not in (left_shoe_path, right_shoe_path)
-                    ]
-                    items_to_reconstruct.append(merged_path)
-                    logging.info(
-                        f"✓ Merged shoes into one item for reconstruction: {merged_path.name}"
-                    )
-            except Exception as e:
-                logging.warning(f"Failed to merge left/right shoes; continuing separately: {e}")
+                        items_to_reconstruct = [
+                            p for p in items_to_reconstruct if p not in (left_shoe_path, right_shoe_path)
+                        ]
+                        items_to_reconstruct.append(merged_path)
+                        logging.info(
+                            f"✓ Merged shoes into one item for reconstruction: {merged_path.name}"
+                        )
+                except Exception as e:
+                    logging.warning(f"Failed to merge left/right shoes; continuing separately: {e}")
             
-            def _item_name_for_path(item_path: Path) -> str:
+            def _item_name_for_path(item_path: Path, product_item_type: str = None) -> str:
+                # Check if this is a product image (processed directly without segmentation)
+                if "product_item" in item_path.stem.lower():
+                    # Use the detected item type from product image detection
+                    return product_item_type.capitalize() if product_item_type else "Clothing"
+                
                 # Extract item name from CLOTHING_ITEMS dictionary
                 try:
                     idx_str = item_path.stem.split('_')[0]
@@ -1374,10 +1780,11 @@ def reconstruct():
                 return item_name
 
             def _process_one_item(item_path: Path) -> dict:
-                item_name = _item_name_for_path(item_path)
+                item_name = _item_name_for_path(item_path, detected_item_type if is_product_image else None)
                 logging.info(f"Processing: {item_name}")
 
                 # Stage 2: Clean garment isolation
+                # For product images, we already cleaned it, but cleaning again is idempotent
                 cleaned_path = clean_garment_isolation(item_path)
 
                 # Stage 3: Reconstruct with OpenAI
